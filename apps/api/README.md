@@ -27,6 +27,41 @@ bun run db:studio         # browse the data
 `DATABASE_URL` overrides the connection, which defaults to the local
 docker-compose Postgres.
 
+## The internal API
+
+```bash
+cp .env.example .env   # then set INTERNAL_API_SECRET
+bun run dev
+```
+
+| Endpoint | Used for |
+| --- | --- |
+| `GET /health` | liveness, including the database |
+| `GET /internal/resolve` | which agent a call runs as |
+| `POST /internal/calls` | open a call record |
+| `POST /internal/calls/:id/events` | append transcript turns |
+| `POST /internal/calls/:id/finalize` | close a call and record usage |
+
+`/internal/*` requires `x-internal-secret`. These endpoints serve any tenant's
+configuration and accept writes against any call, so they carry no per-tenant
+authorisation of their own — the worker is trusted and the boundary is the
+network. **They must never be exposed publicly.**
+
+### Resolving
+
+`/internal/resolve` takes one of `agentVersionId`, `agentId` or `number`, plus
+an optional `orgId`.
+
+`orgId` is a *claim to be checked*, not a filter. A job whose metadata named
+another tenant's agent is refused with 403 rather than served. The check runs
+on the way out of the cache rather than inside the loader, because the cache is
+keyed on what is being looked up and not on who is asking — putting it inside
+would make it hold on a cache miss and lapse on a hit, which passes every test
+that starts cold and fails only in production.
+
+Writes are all idempotent, on `lkJobId`, on `(callId, seq)` and on the usage
+record's key. The worker cannot promise to call any of them exactly once.
+
 ## Validating an agent configuration
 
 ```bash

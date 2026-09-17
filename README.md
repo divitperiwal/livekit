@@ -12,10 +12,29 @@ apps/web/          Next.js dashboard.                                     (not y
 packages/shared/   Generated artefacts both sides depend on.
 ```
 
-The worker holds no database credentials and owns no schema. Today it reads its
-configuration from the environment; next it will ask the API for that
-configuration per call, and post transcripts and usage back. Keeping the
-boundary there is what lets one worker fleet serve every tenant.
+The worker holds no database credentials and owns no schema. It asks the API
+which agent a call should run as, and posts transcripts and usage back. Keeping
+the boundary there is what lets one worker fleet serve every tenant.
+
+## How a call finds its tenant
+
+One worker fleet serves everyone, registered under a single agent name. That
+name is a routing label for the pool, not a tenant identity -- which tenant a
+call belongs to arrives per job:
+
+```
+metadata on the job  ->  agent version  ->  config      (provisioned numbers, outbound)
+dialled number       ->  agent          ->  config      (fallback, one extra lookup)
+```
+
+Resolution happens before the room is joined, so it overlaps with WebRTC and
+SIP media setup rather than adding to the silence before the agent speaks.
+
+**A call that cannot be resolved is ended, not answered.** There is no safe
+default: answering with whatever configuration is at hand would put a caller
+through to a different company's script, and neither of them would know. With
+no `INTERNAL_API_SECRET` set the worker skips all of this and uses environment
+configuration, which is what `agent console` and local development do.
 
 ## The database
 

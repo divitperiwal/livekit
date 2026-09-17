@@ -36,7 +36,9 @@ from .budget import (
     Stage,
 )
 from .config import AgentConfig
+from .control_plane import ControlPlane
 from .costs import actual_cost
+from .resolve import CallIdentity, ResolutionFailed, resolve_call, sip_numbers
 from .telephony import TelephonyConfig
 
 logger = logging.getLogger("automitra.agent")
@@ -119,8 +121,40 @@ def build_session(
 
 
 async def entrypoint(ctx: JobContext) -> None:
-    config = AgentConfig.from_env()
     telephony = TelephonyConfig.from_env()
+
+    async with ControlPlane() as control_plane:
+        if control_plane.configured:
+            # The multi-tenant path. Resolution happens before ctx.connect(),
+            # so the work overlaps with WebRTC and SIP media setup rather than
+            # adding to the silence before the agent speaks.
+            try:
+                identity = await resolve_call(ctx, control_plane)
+            except ResolutionFailed as exc:
+                # Nothing safe to fall back to: answering with whatever
+                # configuration is at hand would put this caller through to
+                # another company's script. End the call instead, loudly.
+                logger.error("refusing the call: %s", exc)
+                ctx.shutdown(reason="agent could not be resolved")
+                return
+            config = identity.config
+        else:
+            # No control plane configured: local development, `agent console`,
+            # or a deployment still running on environment variables.
+            logger.info("no control plane configured; using environment config")
+            identity = None
+            config = AgentConfig.from_env()
+
+        await _run_call(ctx, config, telephony, identity, control_plane)
+
+
+async def _run_call(
+    ctx: JobContext,
+    config: AgentConfig,
+    telephony: TelephonyConfig,
+    identity: CallIdentity | None,
+    control_plane: ControlPlane,
+) -> None:
     logger.info("starting voice agent: %s", config.describe())
 
     session = build_session(config, vad=ctx.proc.userdata.get("vad"))
@@ -224,6 +258,10 @@ async def entrypoint(ctx: JobContext) -> None:
             closing.set()
             asyncio.create_task(end_call(graceful=False))
 
+    # The call record's id, once the control plane has opened one. None when
+    # running on environment config, or when the record could not be written.
+    call_id: str | None = None
+
     async def report_usage() -> None:
         summary = usage.get_summary()
         logger.info(
@@ -233,6 +271,8 @@ async def entrypoint(ctx: JobContext) -> None:
             summary.llm_prompt_tokens,
             summary.llm_completion_tokens,
         )
+
+        cost = None
         try:
             cost = actual_cost(
                 summary,
@@ -241,14 +281,44 @@ async def entrypoint(ctx: JobContext) -> None:
                 llm_model=config.llm_model,
             )
         except KeyError as exc:
+            # An unpriced model must not lose the usage record: the row is
+            # written flagged for review and can be repriced, whereas a
+            # discarded one is revenue that silently never existed.
             logger.info("cost unavailable: %s", exc.args[0])
+
+        if cost is not None:
+            minutes = summary.stt_audio_duration / 60.0
+            per_min = cost.total_inr / minutes if minutes else 0.0
+            logger.info(
+                "session cost: Rs %.4f total (~Rs %.3f/min) [estimate, list prices]",
+                cost.total_inr,
+                per_min,
+            )
+
+        if call_id is None or identity is None:
             return
-        minutes = summary.stt_audio_duration / 60.0
-        per_min = cost.total_inr / minutes if minutes else 0.0
-        logger.info(
-            "session cost: Rs %.4f total (~Rs %.3f/min) [estimate, list prices]",
-            cost.total_inr,
-            per_min,
+
+        elapsed = int(time.monotonic() - started_at)
+        await control_plane.finalize_call(
+            call_id,
+            {
+                "status": "completed",
+                "endReason": budget.stage.name.lower() if budget.stage else None,
+                "durationSeconds": elapsed,
+                "billableSeconds": elapsed,
+                "usage": {
+                    "sttSeconds": summary.stt_audio_duration,
+                    "ttsCharacters": summary.tts_characters_count,
+                    "llmPromptTokens": summary.llm_prompt_tokens,
+                    "llmCachedTokens": getattr(
+                        summary, "llm_prompt_cached_tokens", 0
+                    ),
+                    "llmCompletionTokens": summary.llm_completion_tokens,
+                    "costInr": cost.total_inr if cost else None,
+                    "needsReview": cost is None,
+                    "reviewReason": None if cost else "model has no rate card entry",
+                },
+            },
         )
 
     ctx.add_shutdown_callback(report_usage)
@@ -259,17 +329,41 @@ async def entrypoint(ctx: JobContext) -> None:
     # inbound audio is still being negotiated, and an outbound call has not
     # been answered yet. Greeting into that gap means the caller misses the
     # opening line entirely, so wait for the phone leg to actually appear.
+    caller_number = identity.caller_number if identity else None
+    dialled_number = identity.dialled_number if identity else None
     if telephony.enabled:
         try:
             participant = await ctx.wait_for_participant()
-            number = participant.attributes.get("sip.phoneNumber")
+            caller, dialled = sip_numbers(participant)
+            caller_number = caller or caller_number
+            dialled_number = dialled or dialled_number
             logger.info(
                 "phone call connected: %s (%s)",
-                number or "unknown number",
+                caller_number or "unknown number",
                 participant.identity,
             )
         except Exception:
             logger.exception("no participant joined; greeting anyway")
+
+    # Opened after the far end is known, so the record carries both numbers
+    # from the outset rather than being patched afterwards.
+    if identity is not None:
+        opened = await control_plane.start_call(
+            {
+                "orgId": identity.agent.org_id,
+                "agentId": identity.agent.agent_id,
+                "agentVersionId": identity.agent.agent_version_id,
+                "lkRoomName": ctx.room.name,
+                "lkJobId": ctx.job.id,
+                "direction": identity.direction,
+                "fromNumber": caller_number,
+                "toNumber": dialled_number,
+                "phoneNumberId": identity.meta.phone_number_id,
+            }
+        )
+        if opened:
+            call_id = opened["id"]
+            logger.info("call record %s", call_id)
 
     await session.generate_reply(instructions=config.greeting)
 
