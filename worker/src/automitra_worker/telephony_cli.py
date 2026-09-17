@@ -25,10 +25,6 @@ from .telephony import (
     provision,
 )
 
-load_dotenv(".env.local")
-load_dotenv()
-
-
 def _sip_uri() -> str:
     """The address Plivo sends calls to.
 
@@ -113,6 +109,11 @@ async def _call(to_number: str, from_number: str | None, room: str | None) -> No
 
 
 def main() -> None:
+    # Loaded here rather than at import: both subcommands need it, and nothing
+    # that merely imports this module should read the environment.
+    load_dotenv(".env.local")
+    load_dotenv()
+
     logging.basicConfig(level=logging.WARNING)
     parser = argparse.ArgumentParser(
         prog="telephony",

@@ -29,7 +29,7 @@ from livekit import api
 
 from .config import _env, _env_bool, _env_list, _env_opt
 
-logger = logging.getLogger("livekit-python.telephony")
+logger = logging.getLogger("automitra.telephony")
 
 # Plivo terminates outbound SIP on its zone-specific endpoints. The zone is
 # chosen when the Plivo account is created and cannot be inferred, so it is

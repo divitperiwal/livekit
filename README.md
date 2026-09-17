@@ -1,9 +1,22 @@
-# livekit-python
+# automitra
 
-A configurable WebRTC voice AI agent built on [LiveKit Agents](https://docs.livekit.io/agents/).
-Speech-to-text, the language model and text-to-speech are each selected by
-environment variable, so swapping any of them is a config change rather than a
-code change.
+A voice AI platform, built on [LiveKit Agents](https://docs.livekit.io/agents/)
+with Sarvam for speech, language and voice, and Plivo for the phone network.
+
+## Layout
+
+```
+worker/      Python. The LiveKit agent: it runs the live call and nothing else.
+apps/api/    Bun. The control plane -- data, auth, billing, provisioning.  (not yet)
+apps/web/    Next.js dashboard.                                           (not yet)
+```
+
+The worker holds no database credentials and owns no schema. Today it reads its
+configuration from the environment; in the next phase it will ask the API for
+that configuration per call, and post transcripts and usage back. Keeping the
+boundary there is what lets one worker fleet serve every tenant.
+
+Everything below describes the worker, which is the part that exists.
 
 ## How it works
 
@@ -55,6 +68,17 @@ Other modes:
 uv run agent dev     # connect to LiveKit, hot reload on file changes
 uv run agent start   # production worker
 ```
+
+### Tests
+
+```bash
+uv run pytest
+```
+
+Covers the pure logic: cost arithmetic, budget stage transitions, configuration
+validation, persona loading, and that importing a module does no work. No
+credentials, no network. The parts that need a live LiveKit project are checked
+by making a real call rather than by mocking the SDK.
 
 ### Testing it for real
 
@@ -195,7 +219,7 @@ How the conversation shape moves the cost (Rs/min)
 Verified against a real call: a 1 minute 19 second conversation was billed
 ₹2.75 by Sarvam, or ₹2.09/min — within 4% of the ₹2.01/min estimate.
 
-Rates live in [`costs.py`](src/livekit_python/costs.py) and come from
+Rates live in [`costs.py`](worker/src/automitra_worker/costs.py) and come from
 [Sarvam's pricing page](https://docs.sarvam.ai/api-reference-docs/pricing).
 They are a snapshot — **the Sarvam dashboard is the authority on what you are
 actually billed.** LiveKit bills separately for connection minutes.
@@ -299,7 +323,7 @@ two-thirds of spend, that is where a wordy persona shows up.
 ## Personality
 
 The agent's character comes from a named persona in
-[`personas.py`](src/livekit_python/personas.py). Each one carries a system
+[`personas.py`](worker/src/automitra_worker/personas.py). Each one carries a system
 prompt and a matching opening line.
 
 | `AGENT_PERSONA` | Character |
@@ -466,17 +490,18 @@ surfaces as an error rather than a call that silently never connects. Use
   are easier to tune over your own mic than over a phone line, and the phone
   path changes neither.
 
-## Layout
+## Worker modules
 
 | File | Role |
 | --- | --- |
-| `src/livekit_python/personas.py` | Built-in personalities and shared voice rules |
-| `src/livekit_python/costs.py` | Rate cards, cost estimation, actual-usage costing |
-| `src/livekit_python/cli.py` | The `uv run costs` command |
-| `src/livekit_python/telephony.py` | Plivo/SIP config, trunk provisioning, outbound calls |
-| `src/livekit_python/telephony_cli.py` | The `uv run telephony` and `uv run call` commands |
-| `src/livekit_python/config.py` | Reads and validates env vars into `AgentConfig` |
-| `src/livekit_python/agent.py` | Builds the `AgentSession` and defines the worker entry point |
+| `worker/src/automitra_worker/personas.py` | Built-in personalities and shared voice rules |
+| `worker/src/automitra_worker/costs.py` | Rate cards, cost estimation, actual-usage costing |
+| `worker/src/automitra_worker/cli.py` | The `uv run costs` command |
+| `worker/src/automitra_worker/telephony.py` | Plivo/SIP config, trunk provisioning, outbound calls |
+| `worker/src/automitra_worker/telephony_cli.py` | The `uv run telephony` and `uv run call` commands |
+| `worker/src/automitra_worker/config.py` | Reads and validates env vars into `AgentConfig` |
+| `worker/src/automitra_worker/agent.py` | Builds the `AgentSession` and defines the worker entry point |
+| `worker/src/automitra_worker/seed_personas/` | Business-specific call scripts, as data rather than source |
 
 ## Notes
 

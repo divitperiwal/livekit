@@ -35,7 +35,7 @@ from .costs import (
     TTS_INR_PER_CHAR,
 )
 
-logger = logging.getLogger("livekit-python.budget")
+logger = logging.getLogger("automitra.budget")
 
 # Worst-case TTS spend per minute of wall clock: the agent talking continuously
 # at ~900 characters/minute. Used to translate a budget into a duration floor.

@@ -9,9 +9,6 @@ from dotenv import load_dotenv
 from .config import AgentConfig
 from .costs import CallProfile, estimate
 
-load_dotenv(".env.local")
-load_dotenv()
-
 # Sarvam charges one rate per component regardless of model, so the lever that
 # actually moves the bill is the shape of the conversation, not the model list.
 # These profiles show that spread.
@@ -27,6 +24,11 @@ PROFILES: list[tuple[str, CallProfile]] = [
 
 
 def main() -> None:
+    # Loaded here rather than at import, so importing this module for its
+    # PROFILES table does not read the environment.
+    load_dotenv(".env.local")
+    load_dotenv()
+
     profile = CallProfile()
     config = AgentConfig.from_env()
 

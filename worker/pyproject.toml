@@ -1,0 +1,35 @@
+[project]
+name = "automitra-worker"
+version = "0.1.0"
+description = "LiveKit voice agent worker: runs the live call."
+readme = "README.md"
+authors = [
+    { name = "Divit Periwal", email = "divitperiwal@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "livekit-agents[silero,turn-detector]~=1.8",
+    "livekit-plugins-sarvam~=1.8",
+    "python-dotenv>=1.2.3",
+    "tzdata>=2026.4",
+]
+
+[project.scripts]
+agent = "automitra_worker.agent:main"
+costs = "automitra_worker.cli:main"
+telephony = "automitra_worker.telephony_cli:main"
+call = "automitra_worker.telephony_cli:call_main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"

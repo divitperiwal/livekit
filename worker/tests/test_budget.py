@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from livekit_python.budget import CallBudget, RateGuard, Stage
+from automitra_worker.budget import CallBudget, RateGuard, Stage
 
 
 @dataclass

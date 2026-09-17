@@ -1,36 +1,20 @@
-[project]
-name = "livekit-python"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-authors = [
-    { name = "Divit Periwal", email = "divitperiwal@gmail.com" }
-]
-requires-python = ">=3.13"
-dependencies = [
-    "livekit-agents[silero,turn-detector]~=1.8",
-    "livekit-plugins-sarvam~=1.8",
-    "python-dotenv>=1.2.3",
-    "tzdata>=2026.4",
-]
+# The root is a workspace coordinator, not a package: it has no [project]
+# table, so there is nothing here to build or install. Everything installable
+# lives in a member below.
 
-[project.scripts]
-agent = "livekit_python:main"
-costs = "livekit_python.cli:main"
-telephony = "livekit_python.telephony_cli:main"
-call = "livekit_python.telephony_cli:call_main"
-livekit-python = "livekit_python:main"
+[tool.uv.workspace]
+members = ["worker"]
+
+[tool.uv.sources]
+automitra-worker = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "automitra-worker",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["worker/tests"]
 asyncio_mode = "auto"
-
-[build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
-build-backend = "uv_build"

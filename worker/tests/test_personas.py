@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from livekit_python.personas import (
+from automitra_worker.personas import (
     PERSONAS,
     SEED_DIR,
     VOICE_BASE_RULES,

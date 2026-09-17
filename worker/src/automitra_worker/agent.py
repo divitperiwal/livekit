@@ -39,10 +39,7 @@ from .config import AgentConfig
 from .costs import actual_cost
 from .telephony import TelephonyConfig
 
-load_dotenv(".env.local")
-load_dotenv()
-
-logger = logging.getLogger("livekit-python.agent")
+logger = logging.getLogger("automitra.agent")
 
 
 class VoiceAssistant(Agent):
@@ -121,18 +118,9 @@ def build_session(
     )
 
 
-server = AgentServer(setup_fnc=prewarm)
-
-# A named worker is what a SIP dispatch rule can target explicitly, and what an
-# outbound call dispatches into its room. Left unset the worker takes automatic
-# jobs instead, which is right for WebRTC-only use and ambiguous the moment two
-# agents share a LiveKit project.
-_telephony = TelephonyConfig.from_env()
-
-
-@server.rtc_session(agent_name=_telephony.agent_name or "")
 async def entrypoint(ctx: JobContext) -> None:
     config = AgentConfig.from_env()
+    telephony = TelephonyConfig.from_env()
     logger.info("starting voice agent: %s", config.describe())
 
     session = build_session(config, vad=ctx.proc.userdata.get("vad"))
@@ -271,7 +259,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # inbound audio is still being negotiated, and an outbound call has not
     # been answered yet. Greeting into that gap means the caller misses the
     # opening line entirely, so wait for the phone leg to actually appear.
-    if _telephony.enabled:
+    if telephony.enabled:
         try:
             participant = await ctx.wait_for_participant()
             number = participant.attributes.get("sip.phoneNumber")
@@ -286,8 +274,31 @@ async def entrypoint(ctx: JobContext) -> None:
     await session.generate_reply(instructions=config.greeting)
 
 
+def build_server() -> AgentServer:
+    """Construct and register the worker.
+
+    Deliberately a function rather than module-level code. Importing this
+    module must not start a worker, read the environment or touch the network:
+    the tests import it, and so will anything that wants ``build_session`` or
+    ``entrypoint`` without running them.
+
+    The agent name is a routing label for the worker pool, not a tenant
+    identity -- it is what a SIP dispatch rule targets and what an outbound
+    call dispatches into a room. One name serves every tenant; which tenant a
+    call belongs to arrives per job, in its metadata.
+    """
+    server = AgentServer(setup_fnc=prewarm)
+    agent_name = TelephonyConfig.from_env().agent_name or ""
+    server.rtc_session(agent_name=agent_name)(entrypoint)
+    return server
+
+
 def main() -> None:
-    agents.cli.run_app(server)
+    # Loaded here rather than at import: a module that reads .env on import
+    # cannot be imported by anything that does not want its side effects.
+    load_dotenv(".env.local")
+    load_dotenv()
+    agents.cli.run_app(build_server())
 
 
 if __name__ == "__main__":

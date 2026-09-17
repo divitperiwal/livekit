@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from livekit_python.costs import CallProfile, actual_cost, estimate
+from automitra_worker.costs import CallProfile, actual_cost, estimate
 
 
 @dataclass

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from livekit_python.config import AgentConfig, current_time_line
-from livekit_python.personas import VOICE_BASE_RULES, get_persona
+from automitra_worker.config import AgentConfig, current_time_line
+from automitra_worker.personas import VOICE_BASE_RULES, get_persona
 
 
 @pytest.fixture(autouse=True)
