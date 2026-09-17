@@ -73,7 +73,11 @@ beforeAll(async () => {
     fixture[`version${key}`] = version.id;
   }
 
-  fixture.numberA = `+9155500${suffix.slice(0, 5).replace(/\D/g, "0").padEnd(5, "0")}`;
+  // Digits only, and wide enough that concurrent runs do not collide: e164 is
+  // globally unique by design, so a repeated value fails the insert.
+  fixture.numberA = `+9155${Math.floor(Math.random() * 1e8)
+    .toString()
+    .padStart(8, "0")}`;
   await db.insert(phoneNumbers).values({
     orgId: fixture.orgA,
     e164: fixture.numberA,
@@ -285,5 +289,40 @@ describe("call records", () => {
     });
     expect(swept?.status).toBe("failed");
     expect(swept?.endReason).toBe("worker_lost");
+  });
+});
+
+describe("a number outlives the organisation that rented it", () => {
+  test("deleting an org returns its numbers to the pool", async () => {
+    // The foreign key nulls org_id rather than deleting the row, because the
+    // number is platform inventory and call records still point at it. On its
+    // own that leaves a number still marked `assigned`, pointing at a deleted
+    // agent, belonging to nobody -- and since e164 is globally unique, one
+    // that can never be rented to anyone again. A trigger releases it.
+    const org = (
+      await db
+        .insert(orgs)
+        .values({ name: "Temp", slug: `temp-${Math.random().toString(36).slice(2, 8)}` })
+        .returning()
+    )[0]!;
+
+    const e164 = `+9155${Math.floor(Math.random() * 1e8).toString().padStart(8, "0")}`;
+    await db
+      .insert(phoneNumbers)
+      .values({ orgId: org.id, e164, status: "assigned" });
+
+    await db.delete(orgs).where(eq(orgs.id, org.id));
+
+    const released = await db.query.phoneNumbers.findFirst({
+      where: (n, { eq: is }) => is(n.e164, e164),
+    });
+    expect(released).toBeDefined();
+    expect(released!.status).toBe("available");
+    expect(released!.orgId).toBeNull();
+    expect(released!.agentId).toBeNull();
+    expect(released!.releasedAt).not.toBeNull();
+
+    // And it can actually be rented again, which is the point.
+    await db.delete(phoneNumbers).where(eq(phoneNumbers.e164, e164));
   });
 });
