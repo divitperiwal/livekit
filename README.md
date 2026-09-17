@@ -6,9 +6,10 @@ with Sarvam for speech, language and voice, and Plivo for the phone network.
 ## Layout
 
 ```
-worker/      Python. The LiveKit agent: it runs the live call and nothing else.
-apps/api/    Bun. The control plane -- data, auth, billing, provisioning.
-apps/web/    Next.js dashboard.                                           (not yet)
+worker/            Python. The LiveKit agent: it runs the live call and nothing else.
+apps/api/          Bun. The control plane -- data, auth, billing, provisioning.
+apps/web/          Next.js dashboard.                                     (not yet)
+packages/shared/   Generated artefacts both sides depend on.
 ```
 
 The worker holds no database credentials and owns no schema. Today it reads its
@@ -27,6 +28,21 @@ bun run db:seed                   # KBS Motors as the first tenant
 
 See [apps/api/README.md](apps/api/README.md) for the schema and what it is
 built around.
+
+## One definition of a valid agent
+
+What counts as a valid agent configuration is defined once, in the worker's
+`AgentConfigModel`, and exported to
+[packages/shared/agent-config.schema.json](packages/shared/README.md) for the
+control plane to validate against. Two tests keep the two sides honest: one
+fails if the exported schema has drifted from the model, the other runs both
+validators over the same configurations and fails if they disagree.
+
+Regenerate after changing the model or upgrading the Sarvam plugin:
+
+```bash
+uv run python worker/scripts/export_schema.py
+```
 
 Everything below describes the worker.
 
@@ -139,6 +155,7 @@ immediately with the list of valid values rather than surfacing mid-call.
 | `AGENT_PERSONA` | `assistant` | Which built-in personality to use |
 | `AGENT_INSTRUCTIONS` | unset | Custom prompt, replacing the persona's character |
 | `AGENT_GREETING` | persona's own | What the agent opens the call with |
+| `AGENT_TIMEZONE` | `Asia/Kolkata` | The clock the agent's prompt runs on, for scripts that branch on the hour |
 
 ### Turn detection
 

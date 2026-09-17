@@ -18,6 +18,7 @@ import { eq } from "drizzle-orm";
 
 import { DEFAULT_AGENT_CONFIG } from "./agent-config";
 import { createClient } from "./client";
+import { validateAgentConfig } from "./validate-config";
 import {
   agents,
   agentVersions,
@@ -159,7 +160,10 @@ try {
           promptMode: "verbatim",
           instructions: workerSeed("kbs.prompt.txt"),
           greeting: workerSeed("kbs.greeting.txt"),
-          config: DEFAULT_AGENT_CONFIG,
+          // Through the same validation a customer's save goes through. A
+          // seed that bypassed it could plant a configuration the worker
+          // would reject at call time.
+          config: validateAgentConfig(DEFAULT_AGENT_CONFIG),
           publishedAt: new Date(),
         })
         .returning()

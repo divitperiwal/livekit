@@ -1,48 +1,52 @@
 """Runtime configuration for the voice agent.
 
-Every knob is an environment variable so the STT, TTS and LLM can be tuned
-without touching code. All three components are Sarvam, so a single
-``SARVAM_API_KEY`` covers the whole stack and billing is natively in INR.
+``AgentConfig`` is what the rest of the worker uses: a frozen, fully resolved
+value with no optional fields left to interpret. It can be built two ways.
 
-Model, mode, language and speaker values are validated against the enums the
-Sarvam plugin itself exports, so a typo fails at startup with the list of
-valid values rather than surfacing as an API error mid-call.
+``from_record`` takes a stored agent version, which is how a call gets its
+configuration in production. ``from_env`` reads environment variables, which is
+how local development and ``uv run agent console`` work, and is the fallback
+when a job arrives with no metadata.
+
+Both funnel through :class:`AgentConfigModel`, so a value rejected on one path
+is rejected on the other. That is the point: the environment path is a
+developer convenience, not a second set of rules.
 """
 
 from __future__ import annotations
 
 import os
-import typing
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from livekit.plugins.sarvam.llm import SarvamLLMModels
-from livekit.plugins.sarvam.stt import SarvamSTTModels, SarvamSTTModes
-from livekit.plugins.sarvam.tts import (
-    MODEL_SPEAKER_COMPATIBILITY,
-    SarvamTTSLanguages,
-    SarvamTTSModels,
+from .agent_config_model import (
+    DEFAULT_TIMEZONE,
+    LLM_MODELS,
+    MIN_SILENCE_FOR_TURN_DETECTOR,
+    STT_MODELS,
+    STT_MODES,
+    TTS_LANGUAGES,
+    TTS_MODELS,
+    AgentConfigModel,
+    default_speaker,
+    tts_speakers,
 )
-
 from .personas import DEFAULT_PERSONA, VOICE_BASE_RULES, get_persona
 
-# The semantic turn detector classifies the audio in the trailing silence, so
-# the VAD must hold at least this much before reporting end of speech.
-MIN_SILENCE_FOR_TURN_DETECTOR = 0.25
-
-# Valid values, read off the plugin's own type aliases so they cannot drift
-# out of step with the installed version.
-STT_MODELS: tuple[str, ...] = typing.get_args(SarvamSTTModels)
-STT_MODES: tuple[str, ...] = typing.get_args(SarvamSTTModes)
-LLM_MODELS: tuple[str, ...] = typing.get_args(SarvamLLMModels)
-TTS_MODELS: tuple[str, ...] = typing.get_args(SarvamTTSModels)
-TTS_LANGUAGES: tuple[str, ...] = typing.get_args(SarvamTTSLanguages)
-
-# Voices are per-model: the bulbul:v2 roster was replaced wholesale in v3, so a
-# speaker is only valid against the model it ships with.
-def tts_speakers(model: str) -> tuple[str, ...]:
-    return tuple(MODEL_SPEAKER_COMPATIBILITY[model]["all"])
+__all__ = [
+    "AgentConfig",
+    "AgentConfigModel",
+    "LLM_MODELS",
+    "MIN_SILENCE_FOR_TURN_DETECTOR",
+    "STT_MODELS",
+    "STT_MODES",
+    "TTS_LANGUAGES",
+    "TTS_MODELS",
+    "current_time_line",
+    "tts_speakers",
+]
 
 
 def _env(name: str, default: str) -> str:
@@ -81,44 +85,53 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
 
 
-def _env_choice(
-    name: str, default: str, valid: tuple[str, ...], *, context: str = ""
+def current_time_line(
+    now: datetime | None = None, timezone: str = DEFAULT_TIMEZONE
 ) -> str:
-    """Read a variable that must be one of a known set of values."""
-    value = _env(name, default)
-    if value not in valid:
-        where = f" for {context}" if context else ""
-        raise ValueError(
-            f"{name}={value!r} is not a valid Sarvam value{where}. "
-            f"Choose one of: {', '.join(valid)}."
-        )
-    return value
-
-
-# The dealership runs on India time, and the closing line the agent must say
-# depends on the hour, so the prompt carries the wall-clock time of the call.
-AGENT_TIMEZONE = "Asia/Kolkata"
-
-
-def current_time_line(now: datetime | None = None) -> str:
     """A line stating the current date and time, for the system prompt.
 
     A language model has no clock. Scripts that branch on the time of day (for
     example "call back tomorrow morning" versus "in ten minutes") therefore need
     it stated explicitly, or the model guesses and picks the wrong branch.
+
+    The zone is named rather than described, so an agent outside India does not
+    get told its caller is on India time.
     """
+    zone = ZoneInfo(timezone)
     if now is None:
-        now = datetime.now(ZoneInfo(AGENT_TIMEZONE))
+        now = datetime.now(zone)
+    else:
+        now = now.astimezone(zone)
     return (
         "The current date and time of this call is: "
         + now.strftime("%A, %d %B %Y, %I:%M %p")
-        + " India time."
+        + f" ({timezone})."
     )
+
+
+def compose_instructions(prompt: str, *, prompt_mode: str, timezone: str) -> str:
+    """Assemble the system prompt an agent actually runs on.
+
+    ``prepend_base_rules`` puts the shared voice rules first: the constraints
+    that follow from speech as a medium rather than from any personality.
+    ``verbatim`` leaves the prompt alone, for a complete call script that
+    states its own rules and would be contradicted by them.
+
+    The time is stamped last either way, so it is the freshest thing in the
+    prompt and a verbatim script gets it too.
+    """
+    body = prompt.strip() if prompt_mode == "verbatim" else f"{VOICE_BASE_RULES}\n\n{prompt.strip()}"
+    return f"{body}\n\n{current_time_line(timezone=timezone)}"
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Fully resolved agent settings."""
+    """Fully resolved agent settings.
+
+    Everything here is decided: no field means "work it out later". The
+    endpointing window has its mode-dependent defaults filled in, the prompt is
+    composed, and every value has been validated.
+    """
 
     stt_model: str
     stt_mode: str
@@ -145,132 +158,155 @@ class AgentConfig:
     vad_prefix_padding: float
     endpointing_min_delay: float
     endpointing_max_delay: float
+    timezone: str
+
+    # --- construction -------------------------------------------------------
+
+    @classmethod
+    def _build(
+        cls,
+        model: AgentConfigModel,
+        *,
+        prompt: str,
+        greeting: str,
+        persona: str,
+    ) -> AgentConfig:
+        """The one path from a validated model to a usable config."""
+        min_delay, max_delay = model.resolved_endpointing()
+        return cls(
+            stt_model=model.stt_model,
+            stt_mode=model.stt_mode,
+            stt_language=model.stt_language,
+            llm_model=model.llm_model,
+            llm_temperature=model.llm_temperature,
+            tts_model=model.tts_model,
+            tts_language=model.tts_language,
+            tts_speaker=model.tts_speaker,
+            tts_pace=model.tts_pace,
+            persona=persona,
+            instructions=compose_instructions(
+                prompt, prompt_mode=model.prompt_mode, timezone=model.timezone
+            ),
+            greeting=greeting,
+            budget_inr=model.budget_inr,
+            max_inr_per_min=model.max_inr_per_min,
+            budget_warn_at=model.budget_warn_at,
+            budget_wrap_at=model.budget_wrap_at,
+            budget_farewell=model.budget_farewell,
+            max_response_tokens=model.max_response_tokens,
+            use_turn_detector=model.use_turn_detector,
+            vad_min_silence=model.vad_min_silence,
+            vad_min_speech=model.vad_min_speech,
+            vad_activation_threshold=model.vad_activation_threshold,
+            vad_prefix_padding=model.vad_prefix_padding,
+            endpointing_min_delay=min_delay,
+            endpointing_max_delay=max_delay,
+            timezone=model.timezone,
+        )
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> AgentConfig:
+        """Build from a stored agent version.
+
+        ``record`` is the shape the control plane serves: the version's
+        ``config`` object plus its ``instructions`` and ``greeting``, which are
+        separate columns because they are large and edited independently.
+
+        Keys are accepted in either camelCase or snake_case, because the
+        control plane stores JSON in the former and Python speaks the latter.
+        """
+        config = {_snake(k): v for k, v in (record.get("config") or {}).items()}
+        prompt = record.get("instructions")
+        greeting = record.get("greeting")
+
+        if not prompt:
+            raise ValueError("agent version has no instructions")
+        if not greeting:
+            raise ValueError("agent version has no greeting")
+
+        # ``prompt_mode`` is stored beside the prompt it governs rather than
+        # inside the config blob, since the two are edited together and a mode
+        # pointing at a different prompt is meaningless. A record supplying it
+        # at the top level therefore wins over anything in the blob.
+        stored_mode = record.get("prompt_mode") or record.get("promptMode")
+        if stored_mode:
+            config["prompt_mode"] = stored_mode
+
+        model = AgentConfigModel.model_validate(config)
+        return cls._build(
+            model,
+            prompt=prompt,
+            greeting=greeting,
+            # Stored agents have no persona: the database row replaces the
+            # concept outright. The name is kept for log lines.
+            persona=record.get("agent_slug") or record.get("agentSlug") or "custom",
+        )
 
     @classmethod
     def from_env(cls) -> AgentConfig:
-        raw_temperature = _env_opt("LLM_TEMPERATURE")
-        if raw_temperature is None:
-            temperature = None
-        else:
-            try:
-                temperature = float(raw_temperature)
-            except ValueError as exc:
-                raise ValueError(
-                    f"LLM_TEMPERATURE must be a number, got {raw_temperature!r}"
-                ) from exc
+        """Build from environment variables, for local development.
 
-        use_turn_detector = _env_bool("USE_TURN_DETECTOR", True)
-
-        # With semantic detection the model gives a confident end-of-turn
-        # signal, so the session can commit sooner than with VAD silence alone.
-        default_min_delay = 0.3 if use_turn_detector else 0.5
-        default_max_delay = 2.5 if use_turn_detector else 3.0
-
-        vad_min_silence = _env_float("VAD_MIN_SILENCE_DURATION", 0.25)
-        if use_turn_detector and vad_min_silence < MIN_SILENCE_FOR_TURN_DETECTOR:
-            raise ValueError(
-                "VAD_MIN_SILENCE_DURATION must be at least "
-                f"{MIN_SILENCE_FOR_TURN_DETECTOR} when USE_TURN_DETECTOR is on "
-                f"(got {vad_min_silence}). The semantic turn detector needs that "
-                "much trailing silence to classify the turn."
-            )
-
+        Values are read, then validated by the same model a stored record goes
+        through. Where a variable is unset the model's own default applies, so
+        the two paths cannot drift apart.
+        """
         # The voice roster changed between bulbul generations, so the default
         # speaker follows the chosen model rather than being a fixed name that
         # would be rejected on half of them.
-        tts_model = _env_choice("TTS_MODEL", "bulbul:v3", TTS_MODELS)
-        speakers = tts_speakers(tts_model)
-        default_speaker = "ritu" if tts_model != "bulbul:v2" else "anushka"
-        tts_speaker = _env_choice(
-            "TTS_SPEAKER", default_speaker, speakers, context=tts_model
-        )
+        tts_model = _env("TTS_MODEL", "bulbul:v3")
 
-        # A per-call ceiling in INR. 0 disables it. The stages must stay in
-        # order or the call would be told to wrap up before it is warned.
-        budget_inr = _env_float("CALL_BUDGET_INR", 0.0)
-        # A ceiling on cost per minute, which is what a per-minute price
-        # depends on. 0 disables it.
-        max_inr_per_min = _env_float("MAX_INR_PER_MIN", 0.0)
-        budget_warn_at = _env_float("CALL_BUDGET_WARN_AT", 0.70)
-        budget_wrap_at = _env_float("CALL_BUDGET_WRAP_AT", 0.90)
-        if budget_inr > 0 and not 0 < budget_warn_at <= budget_wrap_at < 1:
-            raise ValueError(
-                "CALL_BUDGET_WARN_AT and CALL_BUDGET_WRAP_AT must satisfy "
-                f"0 < warn <= wrap < 1 (got warn={budget_warn_at}, "
-                f"wrap={budget_wrap_at}). They are fractions of CALL_BUDGET_INR."
-            )
+        use_turn_detector = _env_bool("USE_TURN_DETECTOR", True)
+        timezone = _env("AGENT_TIMEZONE", DEFAULT_TIMEZONE)
 
-        raw_max_tokens = _env_opt("MAX_RESPONSE_TOKENS")
-        if raw_max_tokens is None:
-            max_response_tokens = None
-        else:
-            try:
-                max_response_tokens = int(raw_max_tokens)
-            except ValueError as exc:
-                raise ValueError(
-                    f"MAX_RESPONSE_TOKENS must be a whole number, "
-                    f"got {raw_max_tokens!r}"
-                ) from exc
-            if max_response_tokens <= 0:
-                raise ValueError(
-                    "MAX_RESPONSE_TOKENS must be greater than 0, or unset to "
-                    "leave replies unbounded."
-                )
+        raw: dict[str, Any] = {
+            "stt_model": _env("STT_MODEL", "saaras:v4"),
+            "stt_mode": _env("STT_MODE", "codemix"),
+            "stt_language": _env("STT_LANGUAGE", "hi-IN"),
+            "llm_model": _env("LLM_MODEL", "sarvam-105b-conversations"),
+            "llm_temperature": _env_number("LLM_TEMPERATURE", float),
+            "max_response_tokens": _env_number("MAX_RESPONSE_TOKENS", int),
+            "tts_model": tts_model,
+            "tts_language": _env("TTS_LANGUAGE", "hi-IN"),
+            "tts_speaker": _env("TTS_SPEAKER", _safe_default_speaker(tts_model)),
+            "tts_pace": _env_float("TTS_PACE", 1.0),
+            "budget_inr": _env_float("CALL_BUDGET_INR", 0.0),
+            "max_inr_per_min": _env_float("MAX_INR_PER_MIN", 0.0),
+            "budget_warn_at": _env_float("CALL_BUDGET_WARN_AT", 0.70),
+            "budget_wrap_at": _env_float("CALL_BUDGET_WRAP_AT", 0.90),
+            "use_turn_detector": use_turn_detector,
+            "vad_min_silence": _env_float("VAD_MIN_SILENCE_DURATION", 0.25),
+            "vad_min_speech": _env_float("VAD_MIN_SPEECH_DURATION", 0.05),
+            "vad_activation_threshold": _env_float("VAD_ACTIVATION_THRESHOLD", 0.5),
+            "vad_prefix_padding": _env_float("VAD_PREFIX_PADDING_DURATION", 0.5),
+            "endpointing_min_delay": _env_number("ENDPOINTING_MIN_DELAY", float),
+            "endpointing_max_delay": _env_number("ENDPOINTING_MAX_DELAY", float),
+            "timezone": timezone,
+        }
+        farewell = _env_opt("CALL_BUDGET_FAREWELL")
+        if farewell:
+            raw["budget_farewell"] = farewell
 
         persona = get_persona(_env("AGENT_PERSONA", DEFAULT_PERSONA))
 
-        # A custom prompt replaces the persona's character, but still gets the
-        # shared voice rules prepended -- otherwise a user writing their own
-        # personality silently loses the no-markdown, stay-brief constraints
-        # that make output work as speech.
-        custom_instructions = _env_opt("AGENT_INSTRUCTIONS")
-        if custom_instructions:
-            instructions = f"{VOICE_BASE_RULES}\n\n{custom_instructions}"
+        # A custom prompt replaces the persona's character. It is treated as
+        # "prepend the shared rules" because someone writing a personality in a
+        # variable has not written the no-markdown, stay-brief constraints that
+        # make output work as speech. A prompt that does state its own rules
+        # belongs in a persona, or in a stored agent with prompt_mode=verbatim.
+        custom = _env_opt("AGENT_INSTRUCTIONS")
+        if custom:
+            prompt, prompt_mode = custom, "prepend_base_rules"
         else:
-            instructions = persona.instructions()
+            prompt = persona.prompt
+            prompt_mode = "verbatim" if persona.standalone else "prepend_base_rules"
+        raw["prompt_mode"] = prompt_mode
 
-        # Stamped last so it is the freshest thing in the prompt, and so a
-        # custom AGENT_INSTRUCTIONS gets it too.
-        instructions = f"{instructions}\n\n{current_time_line()}"
-
-        return cls(
-            # saaras:v4 is Sarvam's current speech model; "codemix" keeps
-            # English+Hindi mixed speech as spoken, which is how people
-            # actually talk, instead of forcing it into one script.
-            stt_model=_env_choice("STT_MODEL", "saaras:v4", STT_MODELS),
-            stt_mode=_env_choice("STT_MODE", "codemix", STT_MODES),
-            stt_language=_env("STT_LANGUAGE", "hi-IN"),
-            # sarvam-105b-conversations is tuned for multi-turn dialogue, and
-            # is the model generally available: sarvam-105b, gemma4 and glm5.2
-            # are gated behind beta access and return 400 without it.
-            llm_model=_env_choice(
-                "LLM_MODEL", "sarvam-105b-conversations", LLM_MODELS
-            ),
-            llm_temperature=temperature,
-            tts_model=tts_model,
-            tts_language=_env_choice("TTS_LANGUAGE", "hi-IN", TTS_LANGUAGES),
-            tts_speaker=tts_speaker,
-            tts_pace=_env_float("TTS_PACE", 1.0),
-            persona=persona.name,
-            instructions=instructions,
+        model = _validate_env(raw)
+        return cls._build(
+            model,
+            prompt=prompt,
             greeting=_env("AGENT_GREETING", persona.greeting),
-            budget_inr=budget_inr,
-            max_inr_per_min=max_inr_per_min,
-            budget_warn_at=budget_warn_at,
-            budget_wrap_at=budget_wrap_at,
-            budget_farewell=_env(
-                "CALL_BUDGET_FAREWELL",
-                "Thank the user warmly, tell them the call has to end now, "
-                "and invite them to call back if they need anything more.",
-            ),
-            max_response_tokens=max_response_tokens,
-            use_turn_detector=use_turn_detector,
-            vad_min_silence=vad_min_silence,
-            vad_min_speech=_env_float("VAD_MIN_SPEECH_DURATION", 0.05),
-            vad_activation_threshold=_env_float("VAD_ACTIVATION_THRESHOLD", 0.5),
-            vad_prefix_padding=_env_float("VAD_PREFIX_PADDING_DURATION", 0.5),
-            endpointing_min_delay=_env_float("ENDPOINTING_MIN_DELAY", default_min_delay),
-            endpointing_max_delay=_env_float("ENDPOINTING_MAX_DELAY", default_max_delay),
+            persona=persona.name,
         )
 
     def describe(self) -> str:
@@ -293,3 +329,91 @@ class AgentConfig:
             f"threshold={self.vad_activation_threshold}) "
             f"endpointing({self.endpointing_min_delay}s-{self.endpointing_max_delay}s)"
         )
+
+
+def _snake(name: str) -> str:
+    """camelCase to snake_case, for keys arriving as JSON."""
+    out: list[str] = []
+    for char in name:
+        if char.isupper():
+            out.append("_")
+            out.append(char.lower())
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _safe_default_speaker(tts_model: str) -> str:
+    """A default voice, without raising on a model we do not recognise.
+
+    An unknown model is the model field's error to report, with the list of
+    valid ones. Raising a KeyError here first would replace that message with a
+    worse one.
+    """
+    try:
+        return default_speaker(tts_model)
+    except KeyError:
+        return "ritu"
+
+
+def _env_number(name: str, kind: type) -> Any:
+    """Read an optional numeric variable, unset meaning None."""
+    raw = _env_opt(name)
+    if raw is None:
+        return None
+    try:
+        return kind(raw)
+    except ValueError as exc:
+        what = "a whole number" if kind is int else "a number"
+        raise ValueError(f"{name} must be {what}, got {raw!r}") from exc
+
+
+# Environment variable names, for error messages. The model reports a field
+# name; someone editing a .env file needs the variable they actually typed.
+_ENV_NAMES = {
+    "stt_model": "STT_MODEL",
+    "stt_mode": "STT_MODE",
+    "stt_language": "STT_LANGUAGE",
+    "llm_model": "LLM_MODEL",
+    "llm_temperature": "LLM_TEMPERATURE",
+    "max_response_tokens": "MAX_RESPONSE_TOKENS",
+    "tts_model": "TTS_MODEL",
+    "tts_language": "TTS_LANGUAGE",
+    "tts_speaker": "TTS_SPEAKER",
+    "tts_pace": "TTS_PACE",
+    "budget_inr": "CALL_BUDGET_INR",
+    "max_inr_per_min": "MAX_INR_PER_MIN",
+    "budget_warn_at": "CALL_BUDGET_WARN_AT",
+    "budget_wrap_at": "CALL_BUDGET_WRAP_AT",
+    "budget_farewell": "CALL_BUDGET_FAREWELL",
+    "use_turn_detector": "USE_TURN_DETECTOR",
+    "vad_min_silence": "VAD_MIN_SILENCE_DURATION",
+    "vad_min_speech": "VAD_MIN_SPEECH_DURATION",
+    "vad_activation_threshold": "VAD_ACTIVATION_THRESHOLD",
+    "vad_prefix_padding": "VAD_PREFIX_PADDING_DURATION",
+    "endpointing_min_delay": "ENDPOINTING_MIN_DELAY",
+    "endpointing_max_delay": "ENDPOINTING_MAX_DELAY",
+    "timezone": "AGENT_TIMEZONE",
+}
+
+
+def _validate_env(raw: Mapping[str, Any]) -> AgentConfigModel:
+    """Validate environment-derived values, reporting variable names.
+
+    The model speaks in field names. Someone who typed ``TTS_SPEAKER=anushka``
+    needs to be told about ``TTS_SPEAKER``, not about ``tts_speaker``.
+    """
+    from pydantic import ValidationError
+
+    try:
+        return AgentConfigModel.model_validate(dict(raw))
+    except ValidationError as exc:
+        lines = []
+        for error in exc.errors():
+            field = str(error["loc"][0]) if error["loc"] else ""
+            name = _ENV_NAMES.get(field, field)
+            message = error["msg"].removeprefix("Value error, ")
+            for stored, variable in _ENV_NAMES.items():
+                message = message.replace(stored, variable)
+            lines.append(f"{name}: {message}" if name else message)
+        raise ValueError("; ".join(lines)) from exc

@@ -27,6 +27,24 @@ bun run db:studio         # browse the data
 `DATABASE_URL` overrides the connection, which defaults to the local
 docker-compose Postgres.
 
+## Validating an agent configuration
+
+```bash
+bun test                  # includes the cross-language agreement tests
+bun run schema:check      # fails if the shared schema has drifted
+```
+
+`validateAgentConfig` enforces the same rules the worker does, from
+`packages/shared/agent-config.schema.json`. That file is generated from the
+worker's pydantic model; see
+[packages/shared/README.md](../../packages/shared/README.md) for why the rules
+live there and how the two sides are kept honest.
+
+The short version: the valid models and voices come from the Sarvam plugin's
+own tables, which the API cannot import without installing the entire voice
+stack. So they are exported, and `src/db/agreement.test.ts` runs both
+validators over the same configurations and fails if they ever disagree.
+
 ## Changing the schema
 
 Edit the tables in `src/db/schema/`, then:

@@ -176,6 +176,7 @@ source = { editable = "worker" }
 dependencies = [
     { name = "livekit-agents", extra = ["silero", "turn-detector"] },
     { name = "livekit-plugins-sarvam" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "tzdata" },
 ]
@@ -190,6 +191,7 @@ dev = [
 requires-dist = [
     { name = "livekit-agents", extras = ["silero", "turn-detector"], specifier = "~=1.8" },
     { name = "livekit-plugins-sarvam", specifier = "~=1.8" },
+    { name = "pydantic", specifier = ">=2.11" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "tzdata", specifier = ">=2026.4" },
 ]

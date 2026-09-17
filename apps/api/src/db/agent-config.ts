@@ -1,10 +1,14 @@
 /**
  * The shape of `agent_versions.config`.
  *
- * This mirrors the worker's own `AgentConfig`, minus the three fields that do
- * not belong in stored configuration: `instructions` and `greeting` are their
- * own columns, and `persona` is a worker-side concept that a database row
- * replaces outright.
+ * This mirrors the worker's own `AgentConfig`, minus the fields that live
+ * elsewhere. `instructions`, `greeting` and `promptMode` are their own columns
+ * -- the prompt and the rule for composing it are edited together, and a mode
+ * pointing at a different prompt means nothing -- and `persona` is a
+ * worker-side concept a database row replaces outright.
+ *
+ * The generated schema still carries `prompt_mode`, because the worker's model
+ * accepts it either way. The control plane simply does not put it here.
  *
  * Worth being explicit about what this type is and is not. It describes the
  * shape; it does not validate the values. Whether `bulbul:v3` accepts the
