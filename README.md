@@ -7,16 +7,28 @@ with Sarvam for speech, language and voice, and Plivo for the phone network.
 
 ```
 worker/      Python. The LiveKit agent: it runs the live call and nothing else.
-apps/api/    Bun. The control plane -- data, auth, billing, provisioning.  (not yet)
+apps/api/    Bun. The control plane -- data, auth, billing, provisioning.
 apps/web/    Next.js dashboard.                                           (not yet)
 ```
 
 The worker holds no database credentials and owns no schema. Today it reads its
-configuration from the environment; in the next phase it will ask the API for
-that configuration per call, and post transcripts and usage back. Keeping the
+configuration from the environment; next it will ask the API for that
+configuration per call, and post transcripts and usage back. Keeping the
 boundary there is what lets one worker fleet serve every tenant.
 
-Everything below describes the worker, which is the part that exists.
+## The database
+
+```bash
+docker compose up -d              # postgres and redis
+cd apps/api && bun install
+bun run db:migrate
+bun run db:seed                   # KBS Motors as the first tenant
+```
+
+See [apps/api/README.md](apps/api/README.md) for the schema and what it is
+built around.
+
+Everything below describes the worker.
 
 ## How it works
 

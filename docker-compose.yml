@@ -1,0 +1,43 @@
+# Local development dependencies.
+#
+# Postgres holds everything. Redis caches resolved agent configurations at call
+# start and will later carry the campaign dialer's queue and the per-tenant
+# rate limits on outbound tool calls.
+#
+# These credentials are deliberately trivial and this file is deliberately not
+# how anything is deployed.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: automitra
+      POSTGRES_PASSWORD: automitra
+      POSTGRES_DB: automitra
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # The API and the migrations both wait on this, so it has to mean "ready
+      # for queries" rather than "process started".
+      test: ["CMD-SHELL", "pg_isready -U automitra -d automitra"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
+  redis_data:

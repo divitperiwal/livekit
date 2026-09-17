@@ -1,18 +1,16 @@
 # apps/
 
-The control plane and the dashboard. Neither exists yet.
+- `api/` — Bun control plane. Owns Postgres and its migrations, and will own
+  authentication, organisations, agents, phone numbers, billing, LiveKit SIP
+  provisioning and the LiveKit webhook receiver. It is also what the worker
+  asks for an agent's configuration at the start of a call, and what the worker
+  posts transcripts and usage back to.
 
-- `api/` — Bun backend. Owns Postgres and its migrations, authentication,
-  organisations, agents, phone numbers, billing, LiveKit SIP provisioning and
-  the LiveKit webhook receiver. It is also what the worker asks for an agent's
-  configuration at the start of a call, and what the worker posts transcripts
-  and usage back to.
-- `web/` — Next.js dashboard, against that API.
+  Currently the schema and its migrations; the HTTP server is next.
 
-These are scaffolded in the next phase, once there is a schema for them to be
-built against. Standing them up earlier would mean guessing at the shape of
-endpoints the data model has not settled yet.
+- `web/` — Next.js dashboard, against that API. Not started. Building it before
+  the endpoints exist would mean guessing at their shape.
 
-The Python worker in `worker/` is deliberately independent of both: it holds no
-database credentials and owns no schema, so it can be developed and run against
-environment variables until the API is ready to answer.
+The Python worker in `../worker/` stays independent of both: it holds no
+database credentials and owns no schema, so it can be run against environment
+variables until the API is ready to answer.
