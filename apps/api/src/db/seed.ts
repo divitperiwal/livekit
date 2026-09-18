@@ -23,8 +23,10 @@ import {
   agents,
   agentVersions,
   orgBalances,
+  orgMembers,
   orgs,
   rateCards,
+  users,
 } from "./schema";
 
 const WORKER_SEED_DIR = join(
@@ -119,6 +121,42 @@ try {
     .insert(orgBalances)
     .values({ orgId: org.id, balanceInr: "1000.0000" })
     .onConflictDoNothing();
+
+  // --- a user to sign in as -------------------------------------------------
+  //
+  // Development only. The password is printed rather than hidden because the
+  // point is to be able to log in, and this seed never runs anywhere real.
+  const SEED_EMAIL = "owner@kbsmotors.test";
+  const SEED_PASSWORD = process.env.SEED_PASSWORD ?? "automitra-dev";
+
+  const existingUser = await db.query.users.findFirst({
+    where: eq(users.email, SEED_EMAIL),
+  });
+
+  const user =
+    existingUser ??
+    (
+      await db
+        .insert(users)
+        .values({
+          email: SEED_EMAIL,
+          name: "KBS Owner",
+          passwordHash: await Bun.password.hash(SEED_PASSWORD, {
+            algorithm: "argon2id",
+          }),
+          emailVerifiedAt: new Date(),
+        })
+        .returning()
+    )[0]!;
+
+  await db
+    .insert(orgMembers)
+    .values({ orgId: org.id, userId: user.id, role: "owner" })
+    .onConflictDoNothing();
+
+  console.log(
+    `user ${SEED_EMAIL} ${existingUser ? "(existing)" : `(created, password: ${SEED_PASSWORD})`}`,
+  );
 
   // --- platform rate card ---------------------------------------------------
   const existingCard = await db.query.rateCards.findFirst({

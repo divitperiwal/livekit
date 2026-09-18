@@ -1,37 +1,23 @@
 /**
  * The control plane's HTTP server.
  *
- * Only the internal API so far -- the endpoints the worker calls to resolve an
- * agent and to record what a call did. The public API and the dashboard come
- * later.
+ * Two APIs with different trust models. `/internal` is what the worker calls,
+ * authenticated by a shared secret on a private network and scoped to nothing
+ * -- it serves any tenant. `/api` is what the dashboard calls, authenticated
+ * by a session cookie and scoped to that session's organisation.
  */
-
-import { timingSafeEqual } from "node:crypto";
 
 import { Hono } from "hono";
 
 import { closeRedis } from "./cache";
 import { createClient } from "./db/client";
 import { env } from "./env";
+import { apiRoutes } from "./routes/api";
 import { internalRoutes } from "./routes/internal";
+import { secretsMatch } from "./services/auth";
 
 const { sql, db } = createClient();
 const app = new Hono();
-
-/**
- * Compares secrets without leaking their contents through timing.
- *
- * A plain `===` returns as soon as two bytes differ, so the time it takes
- * reveals how much of a guess was right, and a secret can be recovered a byte
- * at a time. Lengths are compared first because the constant-time comparison
- * needs equal-length buffers -- that leaks the length, which is not worth
- * protecting.
- */
-function secretsMatch(presented: string, expected: string): boolean {
-  const a = Buffer.from(presented);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 app.get("/health", async (c) => {
   try {
@@ -52,6 +38,10 @@ app.use("/internal/*", async (c, next) => {
 });
 
 app.route("/internal", internalRoutes(db));
+
+// The dashboard's API. Unlike /internal, every route below its own auth
+// middleware is scoped to the signed-in session's organisation.
+app.route("/api", apiRoutes(db));
 
 app.onError((error, c) => {
   // Logged in full, returned in outline: an internal error message can carry

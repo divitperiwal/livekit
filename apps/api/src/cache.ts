@@ -29,20 +29,21 @@ let client: Redis | undefined;
 export function redis(): Redis {
   if (!client) {
     client = new Redis(env.redisUrl, {
-      // A call must not wait on a struggling cache. Failing fast here means
-      // falling through to Postgres, which is correct but slower; hanging
-      // would mean dead air on an answered call.
+      // A call must not wait on a struggling cache: one retry, then give up
+      // and let the caller fall through to Postgres. Slower, but correct --
+      // whereas hanging would be dead air on an answered call.
       maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
-      lazyConnect: true,
+      // The offline queue stays ON. Turning it off rejects commands issued
+      // before the socket is writable, which includes every command during
+      // normal startup -- so a perfectly healthy Redis looks unreachable for
+      // the first moments of the process. `connectTimeout` is what actually
+      // bounds the wait.
+      connectTimeout: 2000,
     });
     // Without a handler, a connection error is an unhandled 'error' event and
     // takes the process down -- turning a degraded cache into an outage.
     client.on("error", (error) => {
       console.warn(`redis: ${error.message}`);
-    });
-    void client.connect().catch(() => {
-      /* reported by the error handler above */
     });
   }
   return client;
