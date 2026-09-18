@@ -8,7 +8,7 @@ with Sarvam for speech, language and voice, and Plivo for the phone network.
 ```
 worker/            Python. The LiveKit agent: it runs the live call and nothing else.
 apps/api/          Bun. The control plane -- data, auth, billing, provisioning.
-apps/web/          Next.js dashboard.                                     (not yet)
+apps/web/          Next.js dashboard.
 packages/shared/   Generated artefacts both sides depend on.
 ```
 
@@ -67,6 +67,17 @@ bun run db:seed                   # KBS Motors as the first tenant
 
 See [apps/api/README.md](apps/api/README.md) for the schema and what it is
 built around.
+
+## The dashboard
+
+```bash
+cd apps/api && bun run dev     # the control plane, :3000
+cd apps/web && bun run dev     # the dashboard
+```
+
+Sign in as `owner@kbsmotors.test` with the password `db:seed` printed. Four
+screens: calls and their transcripts, agents, numbers, usage. See
+[apps/web/README.md](apps/web/README.md).
 
 ## One definition of a valid agent
 
