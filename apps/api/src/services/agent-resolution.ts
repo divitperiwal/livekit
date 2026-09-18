@@ -33,7 +33,9 @@ export interface ResolvedAgent {
 export class ResolutionError extends Error {
   constructor(
     message: string,
-    readonly status: 404 | 409 | 403,
+    // 402 when the organisation is out of credit: a real refusal to serve,
+    // distinct from "not found" or "not yours".
+    readonly status: 402 | 403 | 404 | 409,
   ) {
     super(message);
     this.name = "ResolutionError";

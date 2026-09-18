@@ -18,10 +18,12 @@ import type { Database } from "../db/client";
 import {
   assertOwnedBy,
   ResolutionError,
+  type ResolvedAgent,
   resolveByAgentId,
   resolveByDialledNumber,
   resolveByVersionId,
 } from "../services/agent-resolution";
+import { standing, type Standing } from "../services/ledger";
 import {
   appendEvents,
   finalizeCall,
@@ -31,6 +33,39 @@ import {
 
 export function internalRoutes(db: Database) {
   const app = new Hono();
+
+  /**
+   * Refuses a call from an organisation that cannot pay for it.
+   *
+   * Checked here, before the agent is handed over, because a refusal is only
+   * worth anything while it can still prevent the spend. A 402 tells the
+   * worker to end the call rather than answer it.
+   *
+   * `availableInr` goes back with it so the worker can cap the call's own
+   * budget to whatever is left, which bounds how far a single long call can
+   * overdraw between this check and the charge at the end.
+   */
+  async function assertSolvent(orgId: string): Promise<Standing> {
+    const s = await standing(db, orgId);
+    if (!s.canPlaceCalls) {
+      throw new ResolutionError(
+        `org ${orgId} has no credit remaining (balance Rs ${s.balanceInr.toFixed(2)})`,
+        402,
+      );
+    }
+    return s;
+  }
+
+  /**
+   * Checks the organisation can pay, and tells the worker what is left.
+   *
+   * Applied on every resolution path rather than just one: an organisation out
+   * of credit must not be reachable by a different route.
+   */
+  async function withStanding(resolved: ResolvedAgent) {
+    const s = await assertSolvent(resolved.orgId);
+    return { ...resolved, availableInr: s.availableInr };
+  }
 
   /**
    * Resolve the agent for a call.
@@ -64,7 +99,7 @@ export function internalRoutes(db: Database) {
           resolveByVersionId(db, versionId),
         );
         assertOwnedBy(resolved, orgId);
-        return c.json(resolved);
+        return c.json(await withStanding(resolved));
       }
 
       if (agentId) {
@@ -73,11 +108,11 @@ export function internalRoutes(db: Database) {
           resolveByAgentId(db, agentId),
         );
         assertOwnedBy(resolved, orgId);
-        return c.json(resolved);
+        return c.json(await withStanding(resolved));
       }
 
       if (number) {
-        return c.json(await resolveByDialledNumber(db, number));
+        return c.json(await withStanding(await resolveByDialledNumber(db, number)));
       }
 
       return c.json(

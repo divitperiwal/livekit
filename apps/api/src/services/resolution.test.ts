@@ -220,7 +220,9 @@ describe("call records", () => {
       llmPromptTokens: 5000,
       llmCachedTokens: 1000,
       llmCompletionTokens: 300,
-      costInr: 1.2345,
+      sttModel: "saaras:v4",
+      ttsModel: "bulbul:v3",
+      llmModel: "sarvam-105b-conversations",
     };
 
     await finalizeCall(db, call.id, { status: "completed", durationSeconds: 60, usage });
@@ -253,9 +255,10 @@ describe("call records", () => {
         llmPromptTokens: 500,
         llmCachedTokens: 0,
         llmCompletionTokens: 50,
-        costInr: null,
-        needsReview: true,
-        reviewReason: "model has no rate card entry",
+        // A model the rate card does not know about.
+        sttModel: "saaras:v99",
+        ttsModel: "bulbul:v3",
+        llmModel: "sarvam-105b-conversations",
       },
     });
 

@@ -12,6 +12,8 @@ import { and, eq, sql as raw } from "drizzle-orm";
 
 import type { Database } from "../db/client";
 import { callEvents, calls, usageRecords } from "../db/schema";
+import { post } from "./ledger";
+import { priceCall, rateCardFor } from "./pricing";
 
 export interface StartCallInput {
   orgId: string;
@@ -115,17 +117,24 @@ export interface FinalizeInput {
   durationSeconds?: number | null;
   billableSeconds?: number | null;
   transcriptKey?: string | null;
-  /** Measured usage, for the usage record. */
+  /**
+   * What the call measurably used.
+   *
+   * Deliberately raw: the worker reports what it observed and the control
+   * plane prices it. Rate cards, minimums and margin live here, so a pricing
+   * change is a deploy of one service rather than of the whole fleet -- and a
+   * worker running an older build cannot quietly bill at last month's rates.
+   */
   usage?: {
     sttSeconds: number;
     ttsCharacters: number;
     llmPromptTokens: number;
     llmCachedTokens: number;
     llmCompletionTokens: number;
-    costInr?: number | null;
-    priceInr?: number | null;
-    needsReview?: boolean;
-    reviewReason?: string | null;
+    /** Which models actually ran, so the right rates are applied. */
+    sttModel?: string | null;
+    ttsModel?: string | null;
+    llmModel?: string | null;
   };
 }
 
@@ -142,6 +151,31 @@ export async function finalizeCall(
   callId: string,
   input: FinalizeInput,
 ) {
+  // Read the card before the transaction: it is not part of what has to be
+  // atomic, and holding a transaction open across an extra query is needless.
+  const existing = await db
+    .select({ orgId: calls.orgId, toNumber: calls.toNumber })
+    .from(calls)
+    .where(eq(calls.id, callId))
+    .limit(1);
+  const known = existing[0];
+  if (!known) {
+    throw new Error(`call ${callId} not found`);
+  }
+
+  const card = input.usage ? await rateCardFor(db, known.orgId) : null;
+  const priced =
+    input.usage && card !== undefined
+      ? priceCall(
+          {
+            ...input.usage,
+            durationSeconds: input.durationSeconds ?? 0,
+            toNumber: known.toNumber,
+          },
+          card,
+        )
+      : null;
+
   return db.transaction(async (tx) => {
     const updated = await tx
       .update(calls)
@@ -150,39 +184,58 @@ export async function finalizeCall(
         endReason: input.endReason ?? null,
         endedAt: new Date(),
         durationSeconds: input.durationSeconds ?? null,
-        billableSeconds: input.billableSeconds ?? null,
+        billableSeconds: priced?.billableSeconds ?? input.billableSeconds ?? null,
         transcriptKey: input.transcriptKey ?? null,
-        costInr: input.usage?.costInr?.toString() ?? null,
-        priceInr: input.usage?.priceInr?.toString() ?? null,
+        costInr: priced?.costTotalInr?.toString() ?? null,
+        priceInr: priced?.priceInr?.toString() ?? null,
       })
       .where(eq(calls.id, callId))
       .returning();
 
-    const call = updated[0];
-    if (!call) {
-      throw new Error(`call ${callId} not found`);
-    }
+    const call = updated[0]!;
 
-    if (input.usage) {
-      await tx
+    if (input.usage && priced) {
+      const inserted = await tx
         .insert(usageRecords)
         .values({
           orgId: call.orgId,
           callId: call.id,
           idempotencyKey: `call:${call.id}:v1`,
           periodStart: new Date().toISOString().slice(0, 10),
-          billableSeconds: input.billableSeconds ?? 0,
+          billableSeconds: priced.billableSeconds,
           sttSeconds: input.usage.sttSeconds.toString(),
           ttsCharacters: input.usage.ttsCharacters,
           llmPromptTokens: input.usage.llmPromptTokens,
           llmCachedTokens: input.usage.llmCachedTokens,
           llmCompletionTokens: input.usage.llmCompletionTokens,
-          costTotalInr: input.usage.costInr?.toString() ?? null,
-          priceInr: input.usage.priceInr?.toString() ?? null,
-          needsReview: input.usage.needsReview ?? false,
-          reviewReason: input.usage.reviewReason ?? null,
+          pstnSeconds: priced.billableSeconds,
+          costSttInr: priced.costSttInr?.toString() ?? null,
+          costTtsInr: priced.costTtsInr?.toString() ?? null,
+          costLlmInr: priced.costLlmInr?.toString() ?? null,
+          costPstnInr: priced.costPstnInr?.toString() ?? null,
+          costTotalInr: priced.costTotalInr?.toString() ?? null,
+          priceInr: priced.priceInr?.toString() ?? null,
+          rateCardId: priced.rateCardId,
+          needsReview: priced.needsReview,
+          reviewReason: priced.reviewReason,
         })
-        .onConflictDoNothing({ target: usageRecords.idempotencyKey });
+        .onConflictDoNothing({ target: usageRecords.idempotencyKey })
+        .returning({ id: usageRecords.id });
+
+      // Only charge when the usage record was newly written. A second
+      // finalize -- the close handler and the shutdown callback both firing,
+      // or a redelivered webhook -- must not debit the balance twice.
+      const record = inserted[0];
+      if (record && priced.priceInr !== null && priced.priceInr > 0) {
+        await post(tx, {
+          orgId: call.orgId,
+          kind: "usage",
+          amountInr: -priced.priceInr,
+          idempotencyKey: `call:${call.id}:v1`,
+          usageRecordId: record.id,
+          description: `call ${call.id}`,
+        });
+      }
     }
 
     return call;

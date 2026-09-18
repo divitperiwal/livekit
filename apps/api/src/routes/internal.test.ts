@@ -16,7 +16,7 @@ import { eq } from "drizzle-orm";
 
 import { closeRedis, redis } from "../cache";
 import { createClient } from "../db/client";
-import { agents, agentVersions, orgs } from "../db/schema";
+import { agents, agentVersions, orgBalances, orgs } from "../db/schema";
 import type { ResolvedAgent } from "../services/agent-resolution";
 import { internalRoutes } from "./internal";
 
@@ -59,6 +59,15 @@ beforeAll(async () => {
   )[0]!;
 
   await db.update(agents).set({ liveVersionId: version.id }).where(eq(agents.id, agent.id));
+
+  // Resolution refuses an organisation that cannot pay, so both need funding
+  // for these tests to be about routing rather than about credit.
+  for (const id of [orgA.id, orgB.id]) {
+    await db
+      .insert(orgBalances)
+      .values({ orgId: id, balanceInr: "1000" })
+      .onConflictDoNothing();
+  }
 
   Object.assign(fixture, {
     orgA: orgA.id,
@@ -142,5 +151,32 @@ describe("the ownership check survives a warm cache", () => {
       `/resolve?agentId=${fixture.agentA}&orgId=${fixture.orgA}`,
     );
     expect(legitimate.status).toBe(200);
+  });
+});
+
+describe("an organisation that cannot pay is refused", () => {
+  test("resolution returns 402 when the balance is exhausted", async () => {
+    // Checked before the agent is handed over, because a refusal is only worth
+    // anything while it can still prevent the spend.
+    await db
+      .update(orgBalances)
+      .set({ balanceInr: "0", creditLimitInr: "0" })
+      .where(eq(orgBalances.orgId, fixture.orgA));
+    try {
+      const response = await get(`/resolve?agentId=${fixture.agentA}`);
+      expect(response.status).toBe(402);
+    } finally {
+      await db
+        .update(orgBalances)
+        .set({ balanceInr: "1000" })
+        .where(eq(orgBalances.orgId, fixture.orgA));
+    }
+  });
+
+  test("a funded organisation is told what is left", async () => {
+    // So the worker can cap the call's own ceiling to the remaining balance.
+    const response = await get(`/resolve?agentVersionId=${fixture.versionA}`);
+    const body = (await response.json()) as { availableInr: number };
+    expect(body.availableInr).toBeGreaterThan(0);
   });
 });

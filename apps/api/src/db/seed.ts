@@ -73,6 +73,15 @@ const DEFAULT_RATES = {
     },
     pstnInrPerMin: { "+91": 0.6, default: 3.0 },
   },
+  // Rs 6/min against a cost of roughly Rs 2.30-3.70/min, depending on how
+  // much of the call the agent does the talking -- text-to-speech is charged
+  // per character and is the largest component, so a monologue costs nearly
+  // twice what a two-sided conversation does.
+  //
+  // That leaves a thin margin at the talkative end and none at all if an agent
+  // speaks continuously. Worth revisiting once real calls show the actual
+  // distribution, and worth remembering that the carrier figure below is still
+  // an estimate rather than a reconciled number.
   sell: {
     mode: "per_minute" as const,
     perMinuteInr: 6.0,

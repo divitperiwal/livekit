@@ -28,7 +28,7 @@ from livekit import rtc
 from livekit.agents import JobContext
 
 from .config import AgentConfig
-from .control_plane import AgentNotResolved, ControlPlane, ResolvedAgent
+from .control_plane import AgentNotResolved, ControlPlane, OutOfCredit, ResolvedAgent
 
 logger = logging.getLogger("automitra.resolve")
 
@@ -52,7 +52,15 @@ PARTICIPANT_WAIT_SECONDS = 10.0
 
 
 class ResolutionFailed(RuntimeError):
-    """This call cannot be answered, because we do not know who it is for."""
+    """This call cannot be answered."""
+
+
+class OutOfCreditFailure(ResolutionFailed):
+    """The organisation cannot pay for this call.
+
+    Its own type so the worker can log it as a business refusal rather than a
+    fault: nothing is broken, the account is simply empty.
+    """
 
 
 @dataclass(frozen=True)
@@ -216,6 +224,8 @@ async def _resolve_from_meta(meta: JobMeta, control_plane: ControlPlane) -> Reso
             # agent is an error rather than a way to reach it.
             org_id=meta.org_id,
         )
+    except OutOfCredit as exc:
+        raise OutOfCreditFailure(str(exc)) from exc
     except AgentNotResolved as exc:
         raise ResolutionFailed(f"the control plane refused this job: {exc}") from exc
     except Exception as exc:
@@ -225,6 +235,8 @@ async def _resolve_from_meta(meta: JobMeta, control_plane: ControlPlane) -> Reso
 async def _resolve_by_number(number: str, control_plane: ControlPlane) -> ResolvedAgent:
     try:
         return await control_plane.resolve(number=number)
+    except OutOfCredit as exc:
+        raise OutOfCreditFailure(str(exc)) from exc
     except AgentNotResolved as exc:
         raise ResolutionFailed(f"no agent answers {number}: {exc}") from exc
     except Exception as exc:

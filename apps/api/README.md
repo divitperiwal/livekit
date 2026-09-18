@@ -3,9 +3,8 @@
 The control plane. Owns the database and everything that is not the live call:
 organisations, users, agents, phone numbers, tools, call records and billing.
 
-Right now it is the schema and its migrations. The HTTP server comes next,
-along with the internal endpoints the worker calls to fetch an agent's
-configuration and post transcripts and usage back.
+Currently the schema, the internal API the worker talks to, and billing. The
+public API and the dashboard come later.
 
 ## Running it
 
@@ -61,6 +60,32 @@ that starts cold and fails only in production.
 
 Writes are all idempotent, on `lkJobId`, on `(callId, seq)` and on the usage
 record's key. The worker cannot promise to call any of them exactly once.
+
+## Billing
+
+A call is priced by the control plane, not the worker. The worker reports what
+it observed -- seconds of speech, characters synthesised, tokens in and out,
+which models ran -- and the rate card here turns that into money. A pricing
+change is then one deploy rather than a fleet rollout, and a worker on an older
+build cannot quietly bill at last month's rates.
+
+Cost and price are stored separately on every usage record: cost is what the
+platform paid its providers, price is what the customer is charged. Margin per
+call is wanted from the first week and cannot be reconstructed afterwards from
+one blended figure.
+
+`/internal/resolve` refuses an organisation with no credit, with a 402, before
+the agent is handed over -- a refusal is only worth anything while it can still
+prevent the spend. The response carries what is left so the worker can cap the
+call's own ceiling to it.
+
+The ledger is append-only and `org_balances` is a cache of it, moved only in the
+same transaction as the entry that justifies it. `recomputeBalance` rebuilds one
+from the entries, which is how the cache is checked and repaired.
+
+An unpriced model flags the usage record for review rather than discarding it.
+Losing a row is revenue that silently never existed; a flagged row can be
+repriced once the card catches up.
 
 ## Validating an agent configuration
 

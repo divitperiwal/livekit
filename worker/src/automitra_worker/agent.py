@@ -41,7 +41,13 @@ from .call_writer import CallWriter
 from .config import AgentConfig
 from .control_plane import ControlPlane
 from .costs import actual_cost
-from .resolve import CallIdentity, ResolutionFailed, resolve_call, sip_numbers
+from .resolve import (
+    CallIdentity,
+    OutOfCreditFailure,
+    ResolutionFailed,
+    resolve_call,
+    sip_numbers,
+)
 from .telephony import TelephonyConfig
 
 logger = logging.getLogger("automitra.agent")
@@ -133,6 +139,13 @@ async def entrypoint(ctx: JobContext) -> None:
             # adding to the silence before the agent speaks.
             try:
                 identity = await resolve_call(ctx, control_plane)
+            except OutOfCreditFailure as exc:
+                # Not a fault: the account is empty. Logged as a business
+                # refusal so it does not sit in the error budget alongside
+                # things that are actually broken.
+                logger.warning("declining the call: %s", exc)
+                ctx.shutdown(reason="out of credit")
+                return
             except ResolutionFailed as exc:
                 # Nothing safe to fall back to: answering with whatever
                 # configuration is at hand would put this caller through to
@@ -167,15 +180,32 @@ async def _run_call(
     # than an assumed conversation shape.
     usage = metrics.UsageCollector()
 
+    # The organisation was checked as solvent when the agent was resolved, but
+    # a balance is only good for what is in it. Capping the call's own ceiling
+    # to what remains bounds how far one long call can overdraw between that
+    # check and the charge at the end.
+    limit_inr = config.budget_inr
+    available = identity.agent.available_inr if identity else None
+    if available is not None:
+        limit_inr = available if limit_inr <= 0 else min(limit_inr, available)
+        logger.info("call ceiling capped to the remaining balance: Rs %.2f", limit_inr)
+
     budget = CallBudget(
-        limit_inr=config.budget_inr,
+        limit_inr=limit_inr,
         stt_model=config.stt_model,
         tts_model=config.tts_model,
         llm_model=config.llm_model,
         warn_at=config.budget_warn_at,
         wrap_at=config.budget_wrap_at,
     )
-    budget.validate()
+    try:
+        budget.validate()
+    except ValueError as exc:
+        # A balance too small to hold a conversation. Better to say so than to
+        # answer and wrap up two sentences later.
+        logger.error("refusing the call: %s", exc)
+        ctx.shutdown(reason="insufficient balance")
+        return
 
     rate_guard = RateGuard(
         ceiling_inr_per_min=config.max_inr_per_min,
@@ -376,7 +406,12 @@ async def _run_call(
                     else ended_because.get("reason")
                 ),
                 "durationSeconds": elapsed,
-                "billableSeconds": elapsed,
+                # What was used, not what it cost. The control plane holds the
+                # rate cards, so it prices this -- which keeps a worker running
+                # an older build from quietly billing at last month's rates,
+                # and makes a pricing change one deploy rather than a fleet
+                # rollout. The cost logged above is a local estimate for the
+                # operator, not the figure anyone is charged.
                 "usage": {
                     "sttSeconds": summary.stt_audio_duration,
                     "ttsCharacters": summary.tts_characters_count,
@@ -385,9 +420,9 @@ async def _run_call(
                         summary, "llm_prompt_cached_tokens", 0
                     ),
                     "llmCompletionTokens": summary.llm_completion_tokens,
-                    "costInr": cost.total_inr if cost else None,
-                    "needsReview": cost is None,
-                    "reviewReason": None if cost else "model has no rate card entry",
+                    "sttModel": config.stt_model,
+                    "ttsModel": config.tts_model,
+                    "llmModel": config.llm_model,
                 },
             },
         )

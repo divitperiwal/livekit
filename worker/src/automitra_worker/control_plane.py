@@ -48,6 +48,14 @@ class AgentNotResolved(ControlPlaneError):
     """
 
 
+class OutOfCredit(AgentNotResolved):
+    """The organisation cannot pay for this call.
+
+    A refusal rather than a failure, and worth distinguishing: it is the one
+    reason a call is declined that the customer can do something about.
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedAgent:
     """What the control plane says a call should run on."""
@@ -61,6 +69,9 @@ class ResolvedAgent:
     greeting: str
     config: dict[str, Any]
     record_calls: bool
+    # What is left to spend, so the call's own budget can be capped to it.
+    # None when the control plane did not say.
+    available_inr: float | None = None
 
     def as_record(self) -> dict[str, Any]:
         """The shape ``AgentConfig.from_record`` expects."""
@@ -154,6 +165,8 @@ class ControlPlane:
                 if response.status == 200:
                     return _resolved(await response.json())
                 detail = await _error_detail(response)
+                if response.status == 402:
+                    raise OutOfCredit(detail)
                 if response.status in (403, 404, 409):
                     raise AgentNotResolved(detail)
                 raise ControlPlaneError(f"resolve returned {response.status}: {detail}")
@@ -230,6 +243,9 @@ def _resolved(body: dict[str, Any]) -> ResolvedAgent:
         greeting=body["greeting"],
         config=body.get("config") or {},
         record_calls=bool(body.get("recordCalls")),
+        available_inr=(
+            float(body["availableInr"]) if body.get("availableInr") is not None else None
+        ),
     )
 
 
