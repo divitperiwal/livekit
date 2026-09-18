@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit import agents
@@ -28,6 +29,7 @@ from livekit.agents import (
 )
 from livekit.plugins import sarvam, silero
 
+from . import transcript
 from .budget import (
     RATE_INSTRUCTIONS,
     WARN_INSTRUCTIONS,
@@ -35,6 +37,7 @@ from .budget import (
     RateGuard,
     Stage,
 )
+from .call_writer import CallWriter
 from .config import AgentConfig
 from .control_plane import ControlPlane
 from .costs import actual_cost
@@ -202,6 +205,30 @@ async def _run_call(
     # farewell is being spoken, and the call must only be ended once.
     closing = asyncio.Event()
 
+    # Set once the call record exists. Until then there is nowhere to write
+    # events, so they are recorded against nothing and dropped -- which only
+    # covers the moments before the far end has even joined.
+    writer: CallWriter | None = None
+
+    # Why the session ended, as the SDK reports it. Captured rather than
+    # inferred: the budget stage is OK on any normal call, so using it would
+    # label every ordinary hang-up "ok" and say nothing about what happened.
+    ended_because: dict[str, str] = {}
+
+    def record(row: dict[str, object] | None) -> None:
+        """Buffer one event row, if there is a call to attach it to.
+
+        Synchronous on purpose: this is called from session event handlers,
+        which run on the loop carrying audio.
+        """
+        if writer is not None and row is not None:
+            writer.add(
+                str(row["type"]),
+                role=row.get("role"),  # type: ignore[arg-type]
+                content=row.get("content"),  # type: ignore[arg-type]
+                payload=row.get("payload"),  # type: ignore[arg-type]
+            )
+
     async def end_call(*, graceful: bool) -> None:
         """Wind the call up, then close the session."""
         if graceful:
@@ -217,6 +244,34 @@ async def _run_call(
             budget.limit_inr,
         )
         await session.aclose()
+
+    @session.on("conversation_item_added")
+    def _on_item(ev: Any) -> None:
+        """One finished turn.
+
+        This event rather than ``user_input_transcribed``, which fires
+        repeatedly as speech is recognised and would write the same sentence
+        several times over in progressively more complete forms.
+        """
+        record(transcript.conversation_item(ev.item))
+
+    @session.on("function_tools_executed")
+    def _on_tools(ev: Any) -> None:
+        for row in transcript.tool_events(
+            list(getattr(ev, "function_calls", []) or []),
+            list(getattr(ev, "function_call_outputs", []) or []),
+        ):
+            record(row)
+
+    @session.on("close")
+    def _on_close(ev: Any) -> None:
+        ended_because["reason"] = transcript.close_reason(ev)
+
+    @session.on("error")
+    def _on_error(ev: Any) -> None:
+        # A transcript that simply stops is hard to account for later; the
+        # reason is usually whichever component failed.
+        record(transcript.error_event(getattr(ev, "error", None), getattr(ev, "source", None)))
 
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent) -> None:
@@ -242,6 +297,10 @@ async def _run_call(
         stage = budget.update(usage.get_summary())
         if stage == previous:
             return
+
+        # Recorded so a call that ends politely but early is explicable
+        # afterwards, rather than looking like the agent hung up unprompted.
+        record(transcript.stage_event(stage.name, budget.spent_inr, budget.limit_inr))
 
         if stage is Stage.WARN:
             # Steer the agent without interrupting it: the new instructions
@@ -298,12 +357,24 @@ async def _run_call(
         if call_id is None or identity is None:
             return
 
+        # Drain the buffer before finalizing, so the call is not marked
+        # complete while the last of its transcript is still in memory.
+        if writer is not None:
+            await writer.aclose()
+
         elapsed = int(time.monotonic() - started_at)
         await control_plane.finalize_call(
             call_id,
             {
                 "status": "completed",
-                "endReason": budget.stage.name.lower() if budget.stage else None,
+                # The budget stage wins when it ended the call, since "the
+                # ceiling was reached" is more useful than "the session
+                # closed"; otherwise whatever the SDK reported.
+                "endReason": (
+                    budget.stage.name.lower()
+                    if budget.stage is not Stage.OK
+                    else ended_because.get("reason")
+                ),
                 "durationSeconds": elapsed,
                 "billableSeconds": elapsed,
                 "usage": {
@@ -363,6 +434,12 @@ async def _run_call(
         )
         if opened:
             call_id = opened["id"]
+            writer = CallWriter(
+                control_plane=control_plane,
+                call_id=call_id,
+                org_id=identity.agent.org_id,
+            )
+            writer.start()
             logger.info("call record %s", call_id)
 
     await session.generate_reply(instructions=config.greeting)

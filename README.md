@@ -30,6 +30,26 @@ dialled number       ->  agent          ->  config      (fallback, one extra loo
 Resolution happens before the room is joined, so it overlaps with WebRTC and
 SIP media setup rather than adding to the silence before the agent speaks.
 
+## What a call leaves behind
+
+While a call runs, each finished turn, tool call, error and budget stage change
+is buffered and flushed to the control plane every couple of seconds, so a call
+can be watched as it happens.
+
+The buffering matters more than it sounds. Session event handlers run on the
+loop carrying audio, so nothing on that path does I/O: `add` appends to a list
+and returns. The buffer is bounded, and past the cap the oldest events are
+dropped with a warning rather than growing until the process runs out of
+memory -- a transcript is worth a lot, but not a dropped call.
+
+Turns come from `conversation_item_added`, which fires once per finished turn,
+rather than `user_input_transcribed`, which fires repeatedly as speech is
+recognised and would store the same sentence several times over in
+progressively more complete forms.
+
+The worker assigns each event's sequence number, so a flush retried after a
+network failure carries the same numbers and inserts nothing the second time.
+
 **A call that cannot be resolved is ended, not answered.** There is no safe
 default: answering with whatever configuration is at hand would put a caller
 through to a different company's script, and neither of them would know. With
