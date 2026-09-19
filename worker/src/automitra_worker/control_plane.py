@@ -111,17 +111,30 @@ class ControlPlane:
         """
         return bool(self._secret)
 
-    async def __aenter__(self) -> ControlPlane:
+    async def open(self) -> ControlPlane:
+        """Start the session without tying it to a `with` block.
+
+        A call's last writes happen in a shutdown callback, after the
+        entrypoint has already returned, so the client has to outlive the
+        scope that created it. Whoever opens it is responsible for `aclose`.
+        """
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 headers={"x-internal-secret": self._secret}
             )
         return self
 
-    async def __aexit__(self, *_: object) -> None:
+    async def aclose(self) -> None:
+        """Close the session. Safe to call more than once."""
         if self._owned and self._session is not None:
             await self._session.close()
             self._session = None
+
+    async def __aenter__(self) -> ControlPlane:
+        return await self.open()
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
 
     def _require_session(self) -> aiohttp.ClientSession:
         if self._session is None:

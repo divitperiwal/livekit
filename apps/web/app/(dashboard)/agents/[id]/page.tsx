@@ -6,6 +6,7 @@ import { when } from "@/lib/format";
 import { commonTimezones, options, speakersFor, ttsModels } from "@/lib/schema";
 
 import { AgentEditor } from "./editor";
+import { TestCall } from "./test-call";
 
 export const metadata = { title: "Agent" };
 
@@ -80,6 +81,8 @@ export default async function AgentPage({
           produced it.
         </p>
       ) : null}
+
+      {live ? <TestCall agentId={agent.id} /> : null}
 
       <AgentEditor
         agentId={agent.id}

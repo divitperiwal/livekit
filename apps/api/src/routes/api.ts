@@ -38,6 +38,7 @@ import {
   type Session,
 } from "../services/auth";
 import { standing } from "../services/ledger";
+import { startTestCall, TestCallError } from "../services/test-call";
 
 const SESSION_COOKIE = "automitra_session";
 
@@ -346,6 +347,32 @@ export function apiRoutes(db: Database) {
 
   /** The voices available on a model, for the agent form's dropdown. */
   app.get("/voices/:model", (c) => c.json({ speakers: speakersFor(c.req.param("model")) }));
+
+  /**
+   * Places a test call from the browser.
+   *
+   * The same path a phone call takes minus the carrier: the agent is
+   * dispatched with this organisation's metadata and the browser joins the
+   * room as the other party, so resolution, the transcript and the billing all
+   * happen for real.
+   */
+  app.post("/agents/:id/test-call", async (c) => {
+    const session = c.get("session");
+    try {
+      requireWrite(session);
+      const call = await startTestCall(
+        db,
+        session.orgId,
+        c.req.param("id"),
+        session.email,
+      );
+      return c.json(call);
+    } catch (error) {
+      if (error instanceof TestCallError) return c.json({ error: error.message }, error.status);
+      if (error instanceof AuthError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  });
 
   // --- numbers -------------------------------------------------------------
 

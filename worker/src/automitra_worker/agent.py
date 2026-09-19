@@ -132,7 +132,24 @@ def build_session(
 async def entrypoint(ctx: JobContext) -> None:
     telephony = TelephonyConfig.from_env()
 
-    async with ControlPlane() as control_plane:
+    # Deliberately not an `async with` block, and not closed by a shutdown
+    # callback either.
+    #
+    # The entrypoint returns as soon as the session ends, but the callback that
+    # records what the call did -- the transcript flush and the usage record --
+    # runs after that. Closing on the way out of a `with` block would leave
+    # those writes with no session to send on, so the call would sit at
+    # `in_progress` forever and never be billed.
+    #
+    # A shutdown callback does not solve it either: they are all started
+    # together with `asyncio.gather`, so a callback that closed the client
+    # would race the one still using it rather than follow it.
+    #
+    # So the client is closed by whoever registered the last write, in
+    # `report_usage`, once it has finished with it.
+    control_plane = await ControlPlane().open()
+
+    try:
         if control_plane.configured:
             # The multi-tenant path. Resolution happens before ctx.connect(),
             # so the work overlaps with WebRTC and SIP media setup rather than
@@ -145,6 +162,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 # things that are actually broken.
                 logger.warning("declining the call: %s", exc)
                 ctx.shutdown(reason="out of credit")
+                # Nothing was recorded, so nothing later needs the client.
+                await control_plane.aclose()
                 return
             except ResolutionFailed as exc:
                 # Nothing safe to fall back to: answering with whatever
@@ -152,6 +171,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 # another company's script. End the call instead, loudly.
                 logger.error("refusing the call: %s", exc)
                 ctx.shutdown(reason="agent could not be resolved")
+                await control_plane.aclose()
                 return
             config = identity.config
         else:
@@ -162,6 +182,11 @@ async def entrypoint(ctx: JobContext) -> None:
             config = AgentConfig.from_env()
 
         await _run_call(ctx, config, telephony, identity, control_plane)
+    except Exception:
+        # Anything that escapes before the session is running leaves no
+        # shutdown callback to close the client, so it is closed here.
+        await control_plane.aclose()
+        raise
 
 
 async def _run_call(
@@ -352,6 +377,16 @@ async def _run_call(
     call_id: str | None = None
 
     async def report_usage() -> None:
+        """Record what the call used, then release the client.
+
+        The last thing that touches the control plane, so it owns closing it.
+        """
+        try:
+            await _record_usage()
+        finally:
+            await control_plane.aclose()
+
+    async def _record_usage() -> None:
         summary = usage.get_summary()
         logger.info(
             "usage: stt=%.1fs tts=%d chars llm=%d/%d tokens",
@@ -477,7 +512,18 @@ async def _run_call(
             writer.start()
             logger.info("call record %s", call_id)
 
-    await session.generate_reply(instructions=config.greeting)
+    # The handle this returns is deliberately not awaited.
+    #
+    # `generate_reply` is not a coroutine -- it queues the speech and hands
+    # back a `SpeechHandle`, which resolves only once the greeting has finished
+    # being spoken. On a call nobody answered there is no such moment, so
+    # awaiting it holds the entrypoint open until the worker gives up and
+    # cancels the job, taking the shutdown callback and the call's
+    # finalisation down with it. The symptom is a call stuck at `in_progress`
+    # that is never billed and whose transcript is lost.
+    #
+    # Queueing it is enough: the session owns the speech from here.
+    session.generate_reply(instructions=config.greeting)
 
 
 def build_server() -> AgentServer:

@@ -90,3 +90,46 @@ export async function publish(
   revalidatePath(`/agents/${agentId}`);
   return { published: body.version };
 }
+
+export interface TestCallResult {
+  url: string;
+  token: string;
+  roomName: string;
+  agentSlug: string;
+}
+
+/**
+ * Asks the API for a room and a token, and puts the agent in it.
+ *
+ * The token is minted server-side and never leaves this request except to the
+ * browser that asked for it: it grants publish and subscribe on one room and
+ * expires in minutes.
+ */
+export async function startTestCall(
+  agentId: string,
+): Promise<TestCallResult | { error: string }> {
+  const store = await cookies();
+  const session = store.get(SESSION_COOKIE)?.value;
+
+  try {
+    const response = await fetch(`${API_URL}/api/agents/${agentId}/test-call`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(session ? { cookie: `${SESSION_COOKIE}=${session}` } : {}),
+      },
+      cache: "no-store",
+    });
+
+    const body = (await response.json().catch(() => ({}))) as
+      | TestCallResult
+      | { error?: string };
+
+    if (!response.ok) {
+      return { error: ("error" in body && body.error) || "Could not start the call." };
+    }
+    return body as TestCallResult;
+  } catch {
+    return { error: "Could not reach the server." };
+  }
+}
