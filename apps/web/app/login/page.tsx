@@ -14,7 +14,11 @@ function LoginForm() {
     <form action={action} className="w-full max-w-sm space-y-5">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">automitra</h1>
-        <p className="mt-1 text-sm text-neutral-500">Sign in to your dashboard.</p>
+        <p className="mt-1 text-sm text-neutral-500">
+          {params.has("expired")
+            ? "Your session has ended. Sign in again."
+            : "Sign in to your dashboard."}
+        </p>
       </div>
 
       <input type="hidden" name="next" value={params.get("next") ?? "/calls"} />

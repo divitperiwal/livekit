@@ -26,6 +26,12 @@ export interface AgentConfigJson {
   sttModel: string;
   sttMode: string;
   sttLanguage: string;
+  /**
+   * Run the model on Sarvam's realtime endpoint, finalising each utterance
+   * when the worker's VAD hears the caller stop: about a quarter of a second
+   * sooner per turn than the streaming endpoint.
+   */
+  sttRealtime: boolean;
 
   /** Language model. `llmTemperature: null` means the model's own default. */
   llmModel: string;
@@ -39,11 +45,13 @@ export interface AgentConfigJson {
   ttsPace: number;
 
   /**
-   * Cost ceilings, in rupees. Zero disables either one.
+   * Cost ceilings, in rupees.
    *
    * `budgetInr` bounds what one call may cost and ends it in stages when it
-   * gets close. `maxInrPerMin` bounds the rate instead, and never ends a call
-   * -- it only makes the agent terser.
+   * gets close; zero disables it. `maxInrPerMin` bounds the rate instead and
+   * never ends a call: the agent is made terser as it nears the ceiling, and
+   * speech it cannot afford is never synthesised. It cannot be disabled --
+   * zero means the platform ceiling of Rs 2, and nothing above that is valid.
    */
   budgetInr: number;
   maxInrPerMin: number;
@@ -66,6 +74,70 @@ export interface AgentConfigJson {
    * be the customer's local time, not the platform's.
    */
   timezone: string;
+
+  /** Whether the agent may hang up once the conversation is over. */
+  endCallEnabled: boolean;
+
+  /**
+   * The words a call ends on, by the hour in `timezone`: `start` inclusive,
+   * `end` exclusive, a `start` after `end` running through midnight, and the
+   * first match winning. The worker speaks the matching line itself as the
+   * call ends; `{{caller_name}}` is the name the model heard. Empty leaves the
+   * goodbye to the model.
+   */
+  closingLines: Array<{ start: number; end: number; text: string }>;
+
+  /**
+   * Where the agent may transfer a phone call. Field names inside each
+   * target are single words, because only top-level keys are converted
+   * between camelCase and the worker's snake_case.
+   */
+  transferTargets: Array<{ name: string; number: string; description?: string }>;
+
+  /**
+   * What to do when an outbound call the worker placed is answered by a
+   * machine. An empty message with `leave_message` has the model compose one.
+   */
+  voicemailDetection: boolean;
+  voicemailAction: "hangup" | "leave_message";
+  voicemailMessage: string;
+
+  /**
+   * How the greeting is said. "instructions" has the model write it, a model
+   * request per call; "verbatim" speaks it exactly, with its audio cached.
+   * `recordingNotice` follows a verbatim greeting on a recorded call; empty
+   * uses a default for the voice's language.
+   */
+  greetingMode: "instructions" | "verbatim";
+  recordingNotice: string;
+
+  /**
+   * After the call: a summary, one of `dispositions`, and `analysisFields`
+   * filled from the conversation, written by the language model and billed
+   * with the call.
+   */
+  analysisEnabled: boolean;
+  dispositions: string[];
+  analysisFields: Array<{
+    name: string;
+    type?: "string" | "number" | "boolean" | "enum";
+    description?: string;
+    options?: string[];
+  }>;
+  /** What a good call looks like, each scored pass or fail after the call. */
+  qaCriteria: string[];
+
+  /** Seconds of mutual silence before checking in, and how many checks before hanging up. */
+  silenceTimeout: number;
+  silenceChecks: number;
+  /** Keys the caller presses reach the agent as "[keypad: 1]". */
+  dtmfInput: boolean;
+
+  /** LiveKit Inference models to fail over to when Sarvam does not answer. */
+  fallbackLlm: string | null;
+  fallbackStt: string | null;
+  fallbackTts: string | null;
+  fallbackTtsVoice: string;
 }
 
 /**
@@ -79,6 +151,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfigJson = {
   sttModel: "saaras:v4",
   sttMode: "codemix",
   sttLanguage: "hi-IN",
+  sttRealtime: true,
 
   llmModel: "sarvam-105b-conversations",
   llmTemperature: null,
@@ -90,7 +163,7 @@ export const DEFAULT_AGENT_CONFIG: AgentConfigJson = {
   ttsPace: 1.0,
 
   budgetInr: 0,
-  maxInrPerMin: 0,
+  maxInrPerMin: 2,
   budgetWarnAt: 0.7,
   budgetWrapAt: 0.9,
   budgetFarewell:
@@ -106,4 +179,36 @@ export const DEFAULT_AGENT_CONFIG: AgentConfigJson = {
   endpointingMaxDelay: 2.5,
 
   timezone: "Asia/Kolkata",
+
+  endCallEnabled: true,
+  closingLines: [],
+  transferTargets: [],
+  voicemailDetection: true,
+  voicemailAction: "hangup",
+  voicemailMessage: "",
+
+  greetingMode: "instructions",
+  recordingNotice: "",
+
+  analysisEnabled: true,
+  dispositions: [
+    "interested",
+    "not_interested",
+    "callback_requested",
+    "resolved",
+    "unresolved",
+    "wrong_number",
+    "do_not_call",
+  ],
+  analysisFields: [],
+  qaCriteria: [],
+
+  silenceTimeout: 15,
+  silenceChecks: 2,
+  dtmfInput: true,
+
+  fallbackLlm: null,
+  fallbackStt: null,
+  fallbackTts: null,
+  fallbackTtsVoice: "",
 };

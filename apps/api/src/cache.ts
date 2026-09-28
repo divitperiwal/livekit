@@ -10,7 +10,7 @@
  * a new one is a new key and the old entry simply expires unread. That is the
  * practical payoff of versioning agents rather than editing them.
  *
- * `agentlive:<agentId>` is the mutable one -- it points at whichever version
+ * `agentroute:<agentId>` is the mutable one -- it points at whichever version
  * is currently live -- so it carries a short expiry and is dropped explicitly
  * when a version is published.
  */
@@ -76,14 +76,20 @@ export function cachedVersion<T>(versionId: string, load: () => Promise<T>) {
   return through(`agentcfg:${versionId}`, CONFIG_TTL_SECONDS, load);
 }
 
-export function cachedLiveVersion<T>(agentId: string, load: () => Promise<T>) {
-  return through(`agentlive:${agentId}`, LIVE_POINTER_TTL_SECONDS, load);
+/**
+ * An agent's routing: its live version, and any experiment's candidate and
+ * share. Cached rather than the resolved version itself, so the version is
+ * picked per call -- caching the pick would send every call in the window to
+ * whichever side the first one landed on.
+ */
+export function cachedRouting<T>(agentId: string, load: () => Promise<T>) {
+  return through(`agentroute:${agentId}`, LIVE_POINTER_TTL_SECONDS, load);
 }
 
-/** Drops an agent's live pointer. Called when a new version is published. */
+/** Drops an agent's routing. Called on a publish and on any experiment change. */
 export async function invalidateAgent(agentId: string): Promise<void> {
   try {
-    await redis().del(`agentlive:${agentId}`);
+    await redis().del(`agentroute:${agentId}`);
   } catch {
     // The pointer expires on its own within seconds, so a failure here delays
     // a publish taking effect rather than losing it.

@@ -37,4 +37,17 @@ export const env = {
   get internalApiSecret(): string {
     return required("INTERNAL_API_SECRET");
   },
+
+  /**
+   * The key stored secrets are encrypted with -- tool credentials and webhook
+   * signing secrets: 32 random bytes, base64.
+   *
+   * Optional, because a deployment with neither never needs it -- but saving
+   * one without it fails loudly, rather than storing the secret in the clear.
+   * Generate one with `openssl rand -base64 32`, and keep it out of the
+   * database's backups.
+   */
+  get secretsKey(): string | undefined {
+    return process.env.SECRETS_KEY || undefined;
+  },
 };

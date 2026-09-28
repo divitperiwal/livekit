@@ -1,7 +1,8 @@
 # @automitra/web
 
-The dashboard. Four screens: calls and their transcripts, agents, phone
-numbers, and usage.
+The dashboard: calls with their transcripts, analysis and recordings; agents,
+tools, knowledge, campaigns, phone numbers, the do-not-call list, usage, and
+settings (recording, API keys, webhooks).
 
 ## Running it
 

@@ -15,6 +15,7 @@ developer convenience, not a second set of rules.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -30,10 +31,15 @@ from .agent_config_model import (
     TTS_LANGUAGES,
     TTS_MODELS,
     AgentConfigModel,
+    AnalysisField,
+    ClosingLine,
+    TransferTarget,
     default_speaker,
     tts_speakers,
 )
+from .budget import PLATFORM_MAX_INR_PER_MIN
 from .personas import DEFAULT_PERSONA, VOICE_BASE_RULES, get_persona
+from .variables import render
 
 __all__ = [
     "AgentConfig",
@@ -136,6 +142,7 @@ class AgentConfig:
     stt_model: str
     stt_mode: str
     stt_language: str
+    stt_realtime: bool
     llm_model: str
     llm_temperature: float | None
     tts_model: str
@@ -145,6 +152,8 @@ class AgentConfig:
     persona: str
     instructions: str
     greeting: str
+    greeting_mode: str
+    recording_notice: str
     budget_inr: float
     max_inr_per_min: float
     budget_warn_at: float
@@ -159,6 +168,23 @@ class AgentConfig:
     endpointing_min_delay: float
     endpointing_max_delay: float
     timezone: str
+    end_call_enabled: bool
+    closing_lines: tuple[ClosingLine, ...]
+    transfer_targets: tuple[TransferTarget, ...]
+    voicemail_detection: bool
+    voicemail_action: str
+    voicemail_message: str
+    analysis_enabled: bool
+    dispositions: tuple[str, ...]
+    analysis_fields: tuple[AnalysisField, ...]
+    qa_criteria: tuple[str, ...]
+    silence_timeout: float
+    silence_checks: int
+    dtmf_input: bool
+    fallback_llm: str | None
+    fallback_stt: str | None
+    fallback_tts: str | None
+    fallback_tts_voice: str
 
     # --- construction -------------------------------------------------------
 
@@ -177,6 +203,7 @@ class AgentConfig:
             stt_model=model.stt_model,
             stt_mode=model.stt_mode,
             stt_language=model.stt_language,
+            stt_realtime=model.stt_realtime,
             llm_model=model.llm_model,
             llm_temperature=model.llm_temperature,
             tts_model=model.tts_model,
@@ -188,6 +215,8 @@ class AgentConfig:
                 prompt, prompt_mode=model.prompt_mode, timezone=model.timezone
             ),
             greeting=greeting,
+            greeting_mode=model.greeting_mode,
+            recording_notice=model.recording_notice,
             budget_inr=model.budget_inr,
             max_inr_per_min=model.max_inr_per_min,
             budget_warn_at=model.budget_warn_at,
@@ -202,6 +231,23 @@ class AgentConfig:
             endpointing_min_delay=min_delay,
             endpointing_max_delay=max_delay,
             timezone=model.timezone,
+            end_call_enabled=model.end_call_enabled,
+            closing_lines=tuple(model.closing_lines),
+            transfer_targets=tuple(model.transfer_targets),
+            voicemail_detection=model.voicemail_detection,
+            voicemail_action=model.voicemail_action,
+            voicemail_message=model.voicemail_message,
+            analysis_enabled=model.analysis_enabled,
+            dispositions=tuple(model.dispositions),
+            analysis_fields=tuple(model.analysis_fields),
+            qa_criteria=tuple(model.qa_criteria),
+            silence_timeout=model.silence_timeout,
+            silence_checks=model.silence_checks,
+            dtmf_input=model.dtmf_input,
+            fallback_llm=model.fallback_llm,
+            fallback_stt=model.fallback_stt,
+            fallback_tts=model.fallback_tts,
+            fallback_tts_voice=model.fallback_tts_voice,
         )
 
     @classmethod
@@ -262,6 +308,7 @@ class AgentConfig:
             "stt_model": _env("STT_MODEL", "saaras:v4"),
             "stt_mode": _env("STT_MODE", "codemix"),
             "stt_language": _env("STT_LANGUAGE", "hi-IN"),
+            "stt_realtime": _env_bool("STT_REALTIME", True),
             "llm_model": _env("LLM_MODEL", "sarvam-105b-conversations"),
             "llm_temperature": _env_number("LLM_TEMPERATURE", float),
             "max_response_tokens": _env_number("MAX_RESPONSE_TOKENS", int),
@@ -270,7 +317,7 @@ class AgentConfig:
             "tts_speaker": _env("TTS_SPEAKER", _safe_default_speaker(tts_model)),
             "tts_pace": _env_float("TTS_PACE", 1.0),
             "budget_inr": _env_float("CALL_BUDGET_INR", 0.0),
-            "max_inr_per_min": _env_float("MAX_INR_PER_MIN", 0.0),
+            "max_inr_per_min": _env_float("MAX_INR_PER_MIN", PLATFORM_MAX_INR_PER_MIN),
             "budget_warn_at": _env_float("CALL_BUDGET_WARN_AT", 0.70),
             "budget_wrap_at": _env_float("CALL_BUDGET_WRAP_AT", 0.90),
             "use_turn_detector": use_turn_detector,
@@ -281,6 +328,7 @@ class AgentConfig:
             "endpointing_min_delay": _env_number("ENDPOINTING_MIN_DELAY", float),
             "endpointing_max_delay": _env_number("ENDPOINTING_MAX_DELAY", float),
             "timezone": timezone,
+            "end_call_enabled": _env_bool("END_CALL_ENABLED", True),
         }
         farewell = _env_opt("CALL_BUDGET_FAREWELL")
         if farewell:
@@ -301,12 +349,32 @@ class AgentConfig:
             prompt_mode = "verbatim" if persona.standalone else "prepend_base_rules"
         raw["prompt_mode"] = prompt_mode
 
+        # A greeting from the variable is read as an instruction, as it always
+        # has been; only the persona's own can be known to be exact words.
+        greeting = _env_opt("AGENT_GREETING")
+        if greeting is None and persona.verbatim_greeting:
+            raw["greeting_mode"] = "verbatim"
+
         model = _validate_env(raw)
         return cls._build(
             model,
             prompt=prompt,
-            greeting=_env("AGENT_GREETING", persona.greeting),
+            greeting=greeting or persona.greeting,
             persona=persona.name,
+        )
+
+    def with_variables(self, values: Mapping[str, str]) -> AgentConfig:
+        """This configuration with one call's ``{{placeholders}}`` filled in.
+
+        Applied even when there are no values, so that a placeholder with a
+        default still renders it and one without renders as nothing -- never as
+        braces read aloud.
+        """
+        return dataclasses.replace(
+            self,
+            instructions=render(self.instructions, values),
+            greeting=render(self.greeting, values),
+            voicemail_message=render(self.voicemail_message, values),
         )
 
     def describe(self) -> str:
@@ -374,6 +442,7 @@ _ENV_NAMES = {
     "stt_model": "STT_MODEL",
     "stt_mode": "STT_MODE",
     "stt_language": "STT_LANGUAGE",
+    "stt_realtime": "STT_REALTIME",
     "llm_model": "LLM_MODEL",
     "llm_temperature": "LLM_TEMPERATURE",
     "max_response_tokens": "MAX_RESPONSE_TOKENS",
@@ -394,6 +463,7 @@ _ENV_NAMES = {
     "endpointing_min_delay": "ENDPOINTING_MIN_DELAY",
     "endpointing_max_delay": "ENDPOINTING_MAX_DELAY",
     "timezone": "AGENT_TIMEZONE",
+    "end_call_enabled": "END_CALL_ENABLED",
 }
 
 

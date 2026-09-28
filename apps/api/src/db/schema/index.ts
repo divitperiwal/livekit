@@ -13,3 +13,6 @@ export * from "./tools";
 export * from "./calls";
 export * from "./billing";
 export * from "./campaigns";
+export * from "./webhooks";
+export * from "./knowledge";
+export * from "./evals";

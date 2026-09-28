@@ -80,6 +80,21 @@ class JobMeta:
     from_number: str | None = None
     phone_number_id: str | None = None
     variables: dict[str, str] | None = None
+    # Set by the dialer: the worker places this call itself rather than
+    # waiting for someone to be put through, so it can tell an unanswered call
+    # from an answered one and listen for an answering machine from the first
+    # moment.
+    place_call: bool = False
+    # Which campaign contact this call is an attempt at, carried onto the call
+    # record so the outcome can be traced back to the contact.
+    campaign_id: str | None = None
+    contact_id: str | None = None
+    # Set by the public API, so a customer can find the call their request
+    # became -- the call record's own id does not exist yet when they ask.
+    request_id: str | None = None
+    # Set when the job is a test run rather than a call: the worker plays
+    # simulated callers against an agent version and reports back.
+    eval_run_id: str | None = None
 
     @property
     def identifies_an_agent(self) -> bool:
@@ -121,6 +136,11 @@ class JobMeta:
             from_number=text("from_number", "fromNumber"),
             phone_number_id=text("phone_number_id", "phoneNumberId"),
             variables=variables if isinstance(variables, dict) else None,
+            place_call=body.get("place_call") is True or body.get("placeCall") is True,
+            campaign_id=text("campaign_id", "campaignId"),
+            contact_id=text("contact_id", "contactId"),
+            request_id=text("request_id", "requestId"),
+            eval_run_id=text("eval_run_id", "evalRunId"),
         )
 
 

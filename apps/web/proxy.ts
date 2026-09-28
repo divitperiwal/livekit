@@ -19,13 +19,24 @@ export function proxy(request: NextRequest) {
   const signedIn = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
   const { pathname } = request.nextUrl;
   const onLoginPage = pathname === "/login";
+  // An invitation link has to open for someone who has no account yet.
+  const onInvitePage = pathname.startsWith("/invite/");
 
-  if (!signedIn && !onLoginPage) {
+  if (!signedIn && !onLoginPage && !onInvitePage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     // So signing in returns to wherever they were headed.
     if (pathname !== "/") url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
+  }
+
+  // The dashboard found the cookie is no longer valid. It has to be cleared
+  // here -- a server component cannot delete cookies -- or the branch below
+  // would bounce the browser back to the dashboard, in a loop.
+  if (onLoginPage && request.nextUrl.searchParams.has("expired")) {
+    const response = NextResponse.next();
+    response.cookies.delete(SESSION_COOKIE);
+    return response;
   }
 
   if (signedIn && onLoginPage) {

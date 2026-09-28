@@ -60,6 +60,10 @@ class Persona:
     # persona playing a named human on a scripted call must not do.
     standalone: bool = False
 
+    # The greeting is the exact words to say, spoken with no model request and
+    # its audio reused, rather than an instruction the model follows.
+    verbatim_greeting: bool = False
+
     def instructions(self) -> str:
         """The full system prompt: shared voice rules, then this character."""
         if self.standalone:
@@ -89,6 +93,7 @@ PERSONAS: dict[str, Persona] = {
         standalone=True,
         prompt=PROMPT_KBS,
         greeting=GREETING_KBS,
+        verbatim_greeting=True,
     ),
     "assistant": Persona(
         name="assistant",

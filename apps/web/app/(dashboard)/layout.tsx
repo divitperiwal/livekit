@@ -8,9 +8,15 @@ import { NavLink } from "./nav-link";
 
 const SECTIONS = [
   { href: "/calls", label: "Calls" },
+  { href: "/analytics", label: "Analytics" },
   { href: "/agents", label: "Agents" },
+  { href: "/tools", label: "Tools" },
+  { href: "/knowledge", label: "Knowledge" },
+  { href: "/campaigns", label: "Campaigns" },
   { href: "/numbers", label: "Numbers" },
+  { href: "/do-not-call", label: "Do not call" },
   { href: "/usage", label: "Usage" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export default async function DashboardLayout({
@@ -24,9 +30,10 @@ export default async function DashboardLayout({
   } catch (error) {
     // A cookie that is present but no longer valid -- expired, or signed out
     // elsewhere. The proxy only checks that one exists, so this is where that
-    // is noticed.
+    // is noticed. `expired` tells the proxy to clear the cookie; without that
+    // it would see one on /login and send the browser straight back here.
     if (error instanceof ApiError && error.status === 401) {
-      redirect("/login");
+      redirect("/login?expired=1");
     }
     throw error;
   }

@@ -25,6 +25,8 @@ from typing import Any
 
 import aiohttp
 
+from .tools import ToolSpec
+
 logger = logging.getLogger("automitra.control_plane")
 
 DEFAULT_BASE_URL = "http://localhost:3000"
@@ -72,6 +74,10 @@ class ResolvedAgent:
     # What is left to spend, so the call's own budget can be capped to it.
     # None when the control plane did not say.
     available_inr: float | None = None
+    # The customer tools attached to this version, secrets included.
+    tools: tuple[ToolSpec, ...] = ()
+    # Whether the version has knowledge bases to search.
+    has_knowledge: bool = False
 
     def as_record(self) -> dict[str, Any]:
         """The shape ``AgentConfig.from_record`` expects."""
@@ -190,6 +196,46 @@ class ControlPlane:
                 f"the control plane did not answer within {RESOLVE_TIMEOUT_SECONDS}s"
             ) from exc
 
+    # --- knowledge ----------------------------------------------------------
+
+    async def search_knowledge(self, agent_version_id: str, org_id: str, query: str) -> list[str]:
+        """Passages from the version's knowledge bases that answer ``query``.
+
+        On the path a caller is waiting through, so the timeout is the short
+        one, and a failure raises for the tool to turn into "I am not sure".
+        """
+        session = self._require_session()
+        async with session.get(
+            f"{self._base_url}/internal/knowledge/search",
+            params={"agentVersionId": agent_version_id, "orgId": org_id, "q": query},
+            timeout=aiohttp.ClientTimeout(total=RESOLVE_TIMEOUT_SECONDS),
+        ) as response:
+            if response.status != 200:
+                raise ControlPlaneError(
+                    f"knowledge search returned {response.status}: {await _error_detail(response)}"
+                )
+            body = await response.json()
+        return [str(p["content"]) for p in body.get("passages") or [] if isinstance(p, dict) and p.get("content")]
+
+    # --- test runs ----------------------------------------------------------
+
+    async def eval_run(self, run_id: str) -> dict[str, Any]:
+        """A test run: its scenarios, and the agent version under test."""
+        session = self._require_session()
+        async with session.get(
+            f"{self._base_url}/internal/eval-runs/{run_id}",
+            timeout=aiohttp.ClientTimeout(total=WRITE_TIMEOUT_SECONDS),
+        ) as response:
+            if response.status != 200:
+                raise ControlPlaneError(f"eval run {run_id}: {response.status} {await _error_detail(response)}")
+            return await response.json()
+
+    async def eval_result(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return await self._post(f"/internal/eval-runs/{run_id}/results", payload, what="record a test result")
+
+    async def finish_eval_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        return await self._post(f"/internal/eval-runs/{run_id}/finish", payload, what="finish a test run")
+
     # --- call records -------------------------------------------------------
 
     async def start_call(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -246,6 +292,11 @@ class ControlPlane:
 
 
 def _resolved(body: dict[str, Any]) -> ResolvedAgent:
+    tools = tuple(
+        spec
+        for spec in (ToolSpec.from_json(t) for t in body.get("tools") or [] if isinstance(t, dict))
+        if spec is not None
+    )
     return ResolvedAgent(
         org_id=body["orgId"],
         agent_id=body["agentId"],
@@ -259,6 +310,8 @@ def _resolved(body: dict[str, Any]) -> ResolvedAgent:
         available_inr=(
             float(body["availableInr"]) if body.get("availableInr") is not None else None
         ),
+        tools=tools,
+        has_knowledge=bool(body.get("knowledgeBaseCount")),
     )
 
 

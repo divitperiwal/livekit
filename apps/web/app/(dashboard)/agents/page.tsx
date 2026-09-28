@@ -1,12 +1,14 @@
 import Link from "next/link";
 
-import { api, type AgentSummary } from "@/lib/api";
+import { api, type AgentSummary, type Me } from "@/lib/api";
 import { when } from "@/lib/format";
+
+import { CreateAgentForm } from "./agent-forms";
 
 export const metadata = { title: "Agents" };
 
 export default async function AgentsPage() {
-  const { agents } = await api<{ agents: AgentSummary[] }>("/agents");
+  const [{ agents }, me] = await Promise.all([api<{ agents: AgentSummary[] }>("/agents"), api<Me>("/me")]);
 
   return (
     <div className="space-y-6">
@@ -50,6 +52,13 @@ export default async function AgentsPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {me.role === "viewer" ? null : (
+        <section className="space-y-3">
+          <h2 className="text-sm font-medium">New agent</h2>
+          <CreateAgentForm />
+        </section>
       )}
     </div>
   );

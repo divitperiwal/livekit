@@ -12,18 +12,23 @@
  */
 
 import { Hono } from "hono";
+import { and, eq } from "drizzle-orm";
 
-import { cachedLiveVersion, cachedVersion } from "../cache";
+import { cachedRouting, cachedVersion } from "../cache";
 import type { Database } from "../db/client";
+import { evalResults, evalRuns, evalScenarios } from "../db/schema";
 import {
   assertOwnedBy,
   ResolutionError,
   type ResolvedAgent,
-  resolveByAgentId,
+  agentRouting,
+  resolveRouted,
   resolveByDialledNumber,
   resolveByVersionId,
 } from "../services/agent-resolution";
 import { standing, type Standing } from "../services/ledger";
+import { knowledgeBaseCount, searchKnowledge } from "../services/knowledge";
+import { toolsForVersion } from "../services/tools";
 import {
   appendEvents,
   finalizeCall,
@@ -57,14 +62,24 @@ export function internalRoutes(db: Database) {
   }
 
   /**
-   * Checks the organisation can pay, and tells the worker what is left.
+   * Checks the organisation can pay, tells the worker what is left, and hands
+   * over the version's tools.
    *
    * Applied on every resolution path rather than just one: an organisation out
    * of credit must not be reachable by a different route.
+   *
+   * The tools are attached here, after the cache, rather than inside it: they
+   * carry decrypted credentials, which must never be written to Redis, and a
+   * tool row can be edited or disabled while the version it hangs off cannot.
    */
   async function withStanding(resolved: ResolvedAgent) {
     const s = await assertSolvent(resolved.orgId);
-    return { ...resolved, availableInr: s.availableInr };
+    return {
+      ...resolved,
+      availableInr: s.availableInr,
+      tools: await toolsForVersion(db, resolved.agentVersionId),
+      knowledgeBaseCount: await knowledgeBaseCount(db, resolved.agentVersionId),
+    };
   }
 
   /**
@@ -103,11 +118,17 @@ export function internalRoutes(db: Database) {
       }
 
       if (agentId) {
-        // The live pointer moves on publish, so it is cached only briefly.
-        const resolved = await cachedLiveVersion(agentId, () =>
-          resolveByAgentId(db, agentId),
+        // The routing moves on publish and on experiment changes, so it is
+        // cached only briefly; the version it picks is immutable and cached
+        // for long. The ownership check runs on the routing, before any
+        // version is loaded, for the same warm-cache reason as above.
+        const routing = await cachedRouting(agentId, () => agentRouting(db, agentId));
+        if (orgId && routing.orgId !== orgId) {
+          throw new ResolutionError(`agent ${agentId} does not belong to org ${orgId}`, 403);
+        }
+        const resolved = await resolveRouted(routing, (id) =>
+          cachedVersion(id, () => resolveByVersionId(db, id)),
         );
-        assertOwnedBy(resolved, orgId);
         return c.json(await withStanding(resolved));
       }
 
@@ -125,6 +146,93 @@ export function internalRoutes(db: Database) {
       }
       throw error;
     }
+  });
+
+  /**
+   * Passages from a version's knowledge bases, for the agent's
+   * `search_knowledge` tool. `orgId` is required here, not merely checked:
+   * the search is scoped by it, so the worker cannot be talked into reading
+   * another tenant's documents by a version id alone.
+   */
+  app.get("/knowledge/search", async (c) => {
+    const versionId = c.req.query("agentVersionId");
+    const orgId = c.req.query("orgId");
+    const q = c.req.query("q") ?? "";
+    if (!versionId || !orgId) return c.json({ error: "agentVersionId and orgId are required" }, 400);
+    return c.json({ passages: await searchKnowledge(db, orgId, versionId, q.slice(0, 500)) });
+  });
+
+  // --- test runs --------------------------------------------------------------
+
+  /**
+   * A test run as the worker plays it: the scenarios, and the version under
+   * test resolved exactly as a call would be, tools and knowledge included.
+   * Marks the run as running.
+   */
+  app.get("/eval-runs/:id", async (c) => {
+    const run = (await db.select().from(evalRuns).where(eq(evalRuns.id, c.req.param("id"))).limit(1))[0];
+    if (!run) return c.json({ error: "no such run" }, 404);
+    if (!run.agentVersionId) return c.json({ error: "the version under test no longer exists" }, 409);
+    const resolved = await resolveByVersionId(db, run.agentVersionId, run.orgId);
+    const scenarios = await db.select().from(evalScenarios).where(eq(evalScenarios.agentId, run.agentId));
+    await db.update(evalRuns).set({ status: "running" }).where(and(eq(evalRuns.id, run.id), eq(evalRuns.status, "queued")));
+    return c.json({
+      run,
+      scenarios,
+      agent: {
+        ...resolved,
+        tools: await toolsForVersion(db, resolved.agentVersionId),
+        knowledgeBaseCount: await knowledgeBaseCount(db, resolved.agentVersionId),
+      },
+    });
+  });
+
+  /** One scenario's result. Idempotent on (run, scenario): a retry replaces it. */
+  app.post("/eval-runs/:id/results", async (c) => {
+    const body = (await c.req.json()) as {
+      scenarioId: string;
+      passed: boolean;
+      transcript: unknown;
+      judgments: unknown;
+      turns: number;
+      error?: string | null;
+      tokens?: number;
+    };
+    const scenario = (
+      await db.select({ name: evalScenarios.name }).from(evalScenarios).where(eq(evalScenarios.id, body.scenarioId)).limit(1)
+    )[0];
+    const values = {
+      runId: c.req.param("id"),
+      scenarioId: body.scenarioId,
+      scenarioName: scenario?.name ?? "(deleted scenario)",
+      passed: body.passed === true,
+      transcript: body.transcript ?? [],
+      judgments: body.judgments ?? [],
+      turns: Number(body.turns) || 0,
+      error: body.error ?? null,
+      tokens: Number(body.tokens) || 0,
+    };
+    await db
+      .insert(evalResults)
+      .values(values)
+      .onConflictDoUpdate({ target: [evalResults.runId, evalResults.scenarioId], set: values });
+    return c.json({ ok: true });
+  });
+
+  app.post("/eval-runs/:id/finish", async (c) => {
+    const body = (await c.req.json()) as { status?: string; passed?: number; total?: number; tokens?: number; error?: string };
+    await db
+      .update(evalRuns)
+      .set({
+        status: body.status === "completed" ? "completed" : "failed",
+        passed: body.passed ?? null,
+        total: body.total ?? null,
+        tokens: body.tokens ?? null,
+        error: body.error ?? null,
+        finishedAt: new Date(),
+      })
+      .where(eq(evalRuns.id, c.req.param("id")));
+    return c.json({ ok: true });
   });
 
   /** Open a call record. Idempotent on the LiveKit job id. */

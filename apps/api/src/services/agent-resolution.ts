@@ -116,35 +116,76 @@ export async function resolveByVersionId(
   return present(row);
 }
 
-/** Loads whichever version an agent currently has live. */
+export interface AgentRouting {
+  agentId: string;
+  orgId: string;
+  liveVersionId: string | null;
+  candidateVersionId: string | null;
+  candidatePercent: number;
+}
+
+/** Where an agent's calls go: its live version, and any experiment. */
+export async function agentRouting(db: Database, agentId: string): Promise<AgentRouting> {
+  const agent = (await db.select().from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+  if (!agent) throw new ResolutionError(`agent ${agentId} not found`, 404);
+  if (!agent.liveVersionId) {
+    throw new ResolutionError(`agent ${agent.slug} has no published version`, 409);
+  }
+  return {
+    agentId: agent.id,
+    orgId: agent.orgId,
+    liveVersionId: agent.liveVersionId,
+    candidateVersionId: agent.candidateVersionId,
+    candidatePercent: agent.candidatePercent,
+  };
+}
+
+/**
+ * Picks the version one call runs on: the candidate for its share of calls,
+ * the live version for the rest. `random` is in [0, 1).
+ */
+export function pickVersion(routing: AgentRouting, random: number = Math.random()): string {
+  if (routing.candidateVersionId && routing.candidatePercent > 0 && random * 100 < routing.candidatePercent) {
+    return routing.candidateVersionId;
+  }
+  return routing.liveVersionId!;
+}
+
+/**
+ * The version a call to this agent runs on, experiment included.
+ *
+ * A candidate that cannot be loaded falls back to the live version rather
+ * than failing the call: an experiment is optional, answering the phone is
+ * not.
+ */
+export async function resolveRouted(
+  routing: AgentRouting,
+  load: (versionId: string) => Promise<ResolvedAgent>,
+  random: number = Math.random(),
+): Promise<ResolvedAgent> {
+  const versionId = pickVersion(routing, random);
+  if (versionId === routing.liveVersionId) return load(versionId);
+  try {
+    return await load(versionId);
+  } catch {
+    return load(routing.liveVersionId!);
+  }
+}
+
+/** Loads the version a call to this agent should run on now. */
 export async function resolveByAgentId(
   db: Database,
   agentId: string,
   expectedOrgId?: string,
 ): Promise<ResolvedAgent> {
-  const rows = await db
-    .select({ agent: agents })
-    .from(agents)
-    .where(eq(agents.id, agentId))
-    .limit(1);
-
-  const agent = rows[0]?.agent;
-  if (!agent) {
-    throw new ResolutionError(`agent ${agentId} not found`, 404);
-  }
-  if (expectedOrgId && agent.orgId !== expectedOrgId) {
+  const routing = await agentRouting(db, agentId);
+  if (expectedOrgId && routing.orgId !== expectedOrgId) {
     throw new ResolutionError(
       `agent ${agentId} does not belong to org ${expectedOrgId}`,
       403,
     );
   }
-  if (!agent.liveVersionId) {
-    throw new ResolutionError(
-      `agent ${agent.slug} has no published version`,
-      409,
-    );
-  }
-  return resolveByVersionId(db, agent.liveVersionId);
+  return resolveRouted(routing, (versionId) => resolveByVersionId(db, versionId));
 }
 
 /**

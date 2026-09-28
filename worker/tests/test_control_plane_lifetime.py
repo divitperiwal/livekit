@@ -72,3 +72,21 @@ async def test_the_context_manager_still_works() -> None:
     """`with` remains valid for callers whose writes finish inside the block."""
     async with ControlPlane(base_url="http://localhost:1", secret="x") as plane:
         assert plane.configured
+
+
+def test_resolved_tools_are_parsed_and_malformed_ones_dropped() -> None:
+    from automitra_worker.control_plane import _resolved
+
+    resolved = _resolved(
+        {
+            "orgId": "o", "agentId": "a", "agentVersionId": "v", "agentSlug": "s",
+            "promptMode": "verbatim", "instructions": "i", "greeting": "g", "config": {},
+            "tools": [
+                {"name": "book", "description": "d", "url": "https://x.example/b",
+                 "parametersSchema": {"type": "object", "properties": {}}},
+                {"description": "missing a name and a url"},
+                "not even an object",
+            ],
+        }
+    )
+    assert [t.name for t in resolved.tools] == ["book"]

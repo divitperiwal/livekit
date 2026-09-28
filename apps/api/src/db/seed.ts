@@ -75,15 +75,12 @@ const DEFAULT_RATES = {
     },
     pstnInrPerMin: { "+91": 0.6, default: 3.0 },
   },
-  // Rs 6/min against a cost of roughly Rs 2.30-3.70/min, depending on how
-  // much of the call the agent does the talking -- text-to-speech is charged
-  // per character and is the largest component, so a monologue costs nearly
-  // twice what a two-sided conversation does.
+  // Rs 6/min against a cost of at most about Rs 2.60/min on an Indian number:
+  // the worker holds Sarvam's share to Rs 2/min on every call (see
+  // RateCeiling in the worker's budget.py), and the carrier adds Rs 0.60.
   //
-  // That leaves a thin margin at the talkative end and none at all if an agent
-  // speaks continuously. Worth revisiting once real calls show the actual
-  // distribution, and worth remembering that the carrier figure below is still
-  // an estimate rather than a reconciled number.
+  // Worth remembering that the carrier figure above is still an estimate
+  // rather than a reconciled number.
   sell: {
     mode: "per_minute" as const,
     perMinuteInr: 6.0,
@@ -210,7 +207,11 @@ try {
           // Through the same validation a customer's save goes through. A
           // seed that bypassed it could plant a configuration the worker
           // would reject at call time.
-          config: validateAgentConfig(DEFAULT_AGENT_CONFIG),
+          //
+          // The greeting is the exact words, spoken with no model request and
+          // its audio reused: as an instruction it was a cold request of the
+          // whole prompt, and the longest silence of the call.
+          config: validateAgentConfig({ ...DEFAULT_AGENT_CONFIG, greetingMode: "verbatim" }),
           publishedAt: new Date(),
         })
         .returning()

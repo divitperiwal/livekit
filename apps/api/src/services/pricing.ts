@@ -52,6 +52,12 @@ export interface UsageInput {
   durationSeconds: number;
   /** Destination, so the carrier rate can be chosen by prefix. */
   toNumber?: string | null;
+  /**
+   * Whether the call went over a phone line at all. False for a browser test
+   * call, which has no carrier leg to pay for. Defaults to true: an unknown
+   * number on a real call is still charged, at the fallback rate.
+   */
+  phoneLeg?: boolean;
 }
 
 export interface Priced {
@@ -187,7 +193,8 @@ export function priceCall(
       1e6;
   }
 
-  const pstnRate = pstnRateFor(usage.toNumber, rates.cost.pstnInrPerMin);
+  const pstnRate =
+    usage.phoneLeg === false ? 0 : pstnRateFor(usage.toNumber, rates.cost.pstnInrPerMin);
   const costPstn = (billable / 60) * pstnRate;
 
   const parts = [costStt, costTts, costLlm];

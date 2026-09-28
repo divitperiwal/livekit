@@ -284,6 +284,26 @@ def test_greeting_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
     assert AgentConfig.from_env().greeting == "Say hi."
 
 
+def test_a_persona_with_exact_words_greets_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No model request for the opening line: a cold one of the whole prompt
+    # was the longest silence of the call.
+    monkeypatch.setenv("AGENT_PERSONA", "kbs")
+    config = AgentConfig.from_env()
+    assert config.greeting_mode == "verbatim"
+    assert config.greeting.startswith("नमस्कार")
+
+
+def test_a_greeting_from_the_environment_stays_an_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PERSONA", "kbs")
+    monkeypatch.setenv("AGENT_GREETING", "Greet the caller.")
+    assert AgentConfig.from_env().greeting_mode == "instructions"
+
+
+def test_other_personas_still_greet_by_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PERSONA", "assistant")
+    assert AgentConfig.from_env().greeting_mode == "instructions"
+
+
 def test_instructions_carry_the_wall_clock_time() -> None:
     """A model has no clock, and scripts branch on the hour.
 

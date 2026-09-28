@@ -202,3 +202,20 @@ def test_prompt_mode_reaches_the_config() -> None:
     config = AgentConfig.from_record(AGENT.as_record())
     assert VOICE_BASE_RULES not in config.instructions
     assert config.instructions.startswith("You are Simran.")
+
+
+def test_dialer_metadata_is_read() -> None:
+    """The dialer's job asks the worker to place the call itself."""
+    meta = JobMeta.parse(
+        '{"agentId":"a1","placeCall":true,"toNumber":"+919800000000",'
+        '"campaignId":"c1","contactId":"k1","variables":{"name":"Asha"}}'
+    )
+    assert meta.place_call
+    assert (meta.campaign_id, meta.contact_id) == ("c1", "k1")
+    assert meta.variables == {"name": "Asha"}
+
+
+def test_place_call_must_be_a_real_true() -> None:
+    """A truthy string is not an instruction to dial someone."""
+    assert not JobMeta.parse('{"agentId":"a1","placeCall":"yes"}').place_call
+    assert not JobMeta.parse('{"agentId":"a1"}').place_call

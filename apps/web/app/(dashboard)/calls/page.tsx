@@ -40,6 +40,7 @@ export default async function CallsPage() {
                 <th className="px-4 py-2 font-medium">Agent</th>
                 <th className="px-4 py-2 font-medium">From</th>
                 <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Outcome</th>
                 <th className="px-4 py-2 text-right font-medium">Duration</th>
                 <th className="px-4 py-2 text-right font-medium">Charged</th>
               </tr>
@@ -68,6 +69,9 @@ export default async function CallsPage() {
                     {call.endReason ? (
                       <span className="ml-2 text-xs text-neutral-500">{call.endReason}</span>
                     ) : null}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-neutral-600 dark:text-neutral-400">
+                    {call.disposition ? <span className="font-mono">{call.disposition}</span> : "—"}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">
                     {duration(call.durationSeconds)}

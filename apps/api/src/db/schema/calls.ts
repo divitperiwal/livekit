@@ -40,6 +40,9 @@ export const callStatus = pgEnum("call_status", [
   "failed",
   "no_answer",
   "busy",
+  // Answered by a machine rather than a person. Its own status because it is
+  // billed like an answered call but retried like an unanswered one.
+  "voicemail",
 ]);
 
 export const calls = pgTable(
@@ -107,6 +110,25 @@ export const calls = pgTable(
     /** Carrier call id and anything else worth keeping for reconciliation. */
     metadata: jsonb("metadata").notNull().default({}),
 
+    /**
+     * What the post-call analysis made of the call. The disposition is one of
+     * the labels the agent version defined, or null; the fields are keyed by
+     * the names it defined. Columns rather than metadata because they are
+     * what people filter and export on.
+     */
+    summary: text("summary"),
+    disposition: text("disposition"),
+    analysis: jsonb("analysis"),
+    /** QA criteria and whether the call met each: `[{ criterion, passed }]`. */
+    qa: jsonb("qa"),
+
+    /**
+     * How long the caller waited for replies, in seconds: median, 95th
+     * percentile and worst, and the average of each component (end of turn,
+     * model, voice). Null when no reply was measured whole.
+     */
+    latency: jsonb("latency"),
+
     error: text("error"),
     createdAt: createdAt(),
   },
@@ -116,6 +138,7 @@ export const calls = pgTable(
     index("calls_agent_idx").on(t.agentId),
     index("calls_status_idx").on(t.status),
     index("calls_room_idx").on(t.lkRoomName),
+    index("calls_org_disposition_idx").on(t.orgId, t.disposition),
   ],
 );
 
@@ -127,6 +150,8 @@ export const callEventType = pgEnum("call_event_type", [
   "stage_change",
   "transfer",
   "error",
+  // What answered an outbound call, with the greeting it heard.
+  "amd",
 ]);
 
 /**

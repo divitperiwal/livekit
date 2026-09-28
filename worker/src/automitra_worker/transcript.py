@@ -145,6 +145,40 @@ def stage_event(stage: str, spent_inr: float, limit_inr: float) -> dict[str, Any
     }
 
 
+def transfer_event(
+    target: str, number: str, status: str, error: str | None = None
+) -> dict[str, Any]:
+    """The agent tried to hand the call to a person.
+
+    Its own row as well as the tool call that caused it, because a transfer is
+    where the call left the platform: the minutes after it are the carrier's,
+    and a failed transfer is a caller who asked for a person and did not get
+    one.
+    """
+    payload: dict[str, Any] = {"target": target, "number": number, "status": status}
+    if error:
+        payload["error"] = error
+    return {"type": "transfer", "role": None, "content": target, "payload": payload}
+
+
+def amd_event(category: str, reason: str, transcript: str, delay: float) -> dict[str, Any]:
+    """What answered an outbound call: a person, or a machine of some kind.
+
+    Kept with the greeting it heard, since a misclassified person is only
+    diagnosable from what they actually said.
+    """
+    return {
+        "type": "amd",
+        "role": None,
+        "content": category,
+        "payload": {
+            "reason": reason,
+            "heard": _text(transcript),
+            "delaySeconds": round(delay, 2),
+        },
+    }
+
+
 def close_reason(event: Any) -> str:
     """A short, storable reason a session ended."""
     reason = getattr(event, "reason", None)

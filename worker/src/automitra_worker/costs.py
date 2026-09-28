@@ -18,6 +18,8 @@ STT_INR_PER_MIN: dict[str, float] = {
     "saaras:v4": 30.0 / 60,
     "saaras:v3": 30.0 / 60,
 }
+# The realtime endpoint is billed under the model it runs. Sarvam's pricing
+# page does not list it separately, so it is assumed to be the same rate.
 
 # TTS: Rs per character. Sarvam quotes Rs 30 per 10,000 characters.
 TTS_INR_PER_CHAR: dict[str, float] = {
@@ -36,7 +38,10 @@ LLM_INR_PER_MTOK: dict[str, tuple[float, float]] = {
 
 # Cached input is billed at a discount. ``estimate`` cannot know the hit rate
 # ahead of time so it assumes none and errs high; costing from measured usage
-# uses the real cached-token count.
+# uses the cached-token count the API reports. Sarvam's API reports none
+# (``prompt_tokens_details`` is null, checked on sarvam-105b-conversations), so
+# in practice every input token is costed at the full rate: an overestimate if
+# Sarvam does discount the prefix its server reuses.
 LLM_INR_CACHED_PER_MTOK: dict[str, float] = {
     "sarvam-105b": 10.98,
     "sarvam-105b-conversations": 10.98,

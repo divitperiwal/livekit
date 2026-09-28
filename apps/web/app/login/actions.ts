@@ -64,8 +64,9 @@ export async function login(
   });
 
   // Only ever a path on this site: an open redirect would let a link that
-  // looks like ours land someone on a page that is not.
-  redirect(next.startsWith("/") ? next : "/calls");
+  // looks like ours land someone on a page that is not. "//host" and "/\host"
+  // start with a slash but are read by browsers as another site.
+  redirect(/^\/(?![/\\])/.test(next) ? next : "/calls");
 }
 
 export async function logout(): Promise<void> {

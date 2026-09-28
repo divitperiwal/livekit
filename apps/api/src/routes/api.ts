@@ -12,19 +12,24 @@
  */
 
 import { Hono } from "hono";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { invalidateAgent } from "../cache";
 import type { Database } from "../db/client";
 import { validateAgentConfig, AgentConfigError, speakersFor } from "../db/validate-config";
 import {
+  agentKnowledgeBases,
   agents,
+  agentTools,
   agentVersions,
   callEvents,
   calls,
   orgBalances,
+  orgMembers,
   orgs,
+  knowledgeBases,
   phoneNumbers,
+  tools,
   usageRecords,
 } from "../db/schema";
 import {
@@ -38,7 +43,12 @@ import {
   type Session,
 } from "../services/auth";
 import { standing } from "../services/ledger";
+import { acceptInvite, TeamError } from "../services/team";
+import { liveKitDispatcher, type Dispatcher } from "../services/dialer";
 import { startTestCall, TestCallError } from "../services/test-call";
+import { outboundRoutes } from "./outbound";
+import { insightsRoutes } from "./insights";
+import { workspaceRoutes } from "./workspace";
 
 const SESSION_COOKIE = "automitra_session";
 
@@ -68,7 +78,12 @@ function readCookie(header: string | undefined, name: string): string | null {
   return null;
 }
 
-export function apiRoutes(db: Database) {
+/**
+ * ``dispatcher`` is injectable so tests never reach a real LiveKit project:
+ * the default reads credentials from the environment, and a developer's
+ * ``.env`` usually has live ones.
+ */
+export function apiRoutes(db: Database, dispatcher: () => Dispatcher = liveKitDispatcher) {
   const app = new Hono<{ Variables: Vars }>();
 
   // --- signing in ---------------------------------------------------------
@@ -91,6 +106,25 @@ export function apiRoutes(db: Database) {
     }
   });
 
+  /**
+   * Accepts an invitation and signs in. Before the session middleware, since
+   * the person accepting may not have an account yet.
+   */
+  app.post("/auth/accept-invite", async (c) => {
+    const body = (await c.req.json()) as { token?: unknown; password?: unknown; name?: unknown };
+    try {
+      const { email } = await acceptInvite(db, body.token, body.password, body.name);
+      const { sessionId, session } = await signIn(db, email, String(body.password));
+      c.header("Set-Cookie", cookie(sessionId, 60 * 60 * 24));
+      return c.json({ email: session.email, orgId: session.orgId, role: session.role });
+    } catch (error) {
+      if (error instanceof AuthError || error instanceof TeamError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+  });
+
   app.post("/auth/logout", async (c) => {
     const sessionId = readCookie(c.req.header("cookie"), SESSION_COOKIE);
     if (sessionId) await signOut(sessionId);
@@ -106,6 +140,18 @@ export function apiRoutes(db: Database) {
     if (!sessionId || !session) {
       return c.json({ error: "not signed in" }, 401);
     }
+    // The session remembers a role, but membership can change under it: a
+    // removed member must lose access now, not when the session expires,
+    // and a demoted one must lose the old role's rights. One indexed lookup.
+    const membership = await db
+      .select({ role: orgMembers.role })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.orgId, session.orgId), eq(orgMembers.userId, session.userId)))
+      .limit(1);
+    if (!membership[0]) {
+      return c.json({ error: "you are no longer a member of this organisation" }, 401);
+    }
+    session.role = membership[0].role;
     c.set("session", session);
     c.set("sessionId", sessionId);
     await next();
@@ -139,10 +185,13 @@ export function apiRoutes(db: Database) {
     const { orgId } = c.get("session");
     const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
     const status = c.req.query("status");
+    const disposition = c.req.query("disposition");
 
-    const where = status
-      ? and(eq(calls.orgId, orgId), eq(calls.status, status as "completed"))
-      : eq(calls.orgId, orgId);
+    const where = and(
+      eq(calls.orgId, orgId),
+      ...(status ? [eq(calls.status, status as "completed")] : []),
+      ...(disposition ? [eq(calls.disposition, disposition)] : []),
+    );
 
     const rows = await db
       .select({
@@ -160,6 +209,8 @@ export function apiRoutes(db: Database) {
         costInr: calls.costInr,
         priceInr: calls.priceInr,
         recordingKey: calls.recordingKey,
+        disposition: calls.disposition,
+        summary: calls.summary,
       })
       .from(calls)
       .leftJoin(agents, eq(agents.id, calls.agentId))
@@ -195,10 +246,54 @@ export function apiRoutes(db: Database) {
       .where(eq(usageRecords.callId, call.id))
       .limit(1);
 
-    return c.json({ call, events, usage: usage[0] ?? null });
+    // The event id is a bigserial read as a BigInt, which JSON.stringify
+    // refuses; it goes out as a string, which is what the dashboard expects.
+    return c.json({
+      call,
+      events: events.map((event) => ({ ...event, id: String(event.id) })),
+      usage: usage[0] ?? null,
+    });
   });
 
   // --- agents --------------------------------------------------------------
+
+  const toolIdsOf = async (versionId: string) =>
+    (await db.select({ id: agentTools.toolId }).from(agentTools).where(eq(agentTools.agentVersionId, versionId))).map(
+      (r) => r.id,
+    );
+  const knowledgeBaseIdsOf = async (versionId: string) =>
+    (
+      await db
+        .select({ id: agentKnowledgeBases.knowledgeBaseId })
+        .from(agentKnowledgeBases)
+        .where(eq(agentKnowledgeBases.agentVersionId, versionId))
+    ).map((r) => r.id);
+
+  /**
+   * What a new version is given of some kind of attachment: tools, knowledge
+   * bases.
+   *
+   * Omitted means "the same as the version being replaced", so a prompt edit
+   * cannot quietly drop them. Every id must be this organisation's: a version
+   * must not be able to borrow another tenant's tool, with its credentials,
+   * or another tenant's documents.
+   */
+  async function attachments(
+    raw: unknown,
+    field: string,
+    current: () => Promise<string[]>,
+    ownedCount: (ids: string[]) => Promise<number>,
+  ): Promise<{ ids: string[] } | { error: string; status: 400 | 422 }> {
+    if (raw === undefined) return { ids: await current() };
+    if (!Array.isArray(raw) || !raw.every((id): id is string => typeof id === "string")) {
+      return { error: `${field} must be a list of ids`, status: 400 };
+    }
+    const ids = [...new Set(raw)];
+    if (ids.length > 0 && (await ownedCount(ids)) !== ids.length) {
+      return { error: `${field} names something that is not this organisation's`, status: 422 };
+    }
+    return { ids };
+  }
 
   app.get("/agents", async (c) => {
     const { orgId } = c.get("session");
@@ -251,7 +346,13 @@ export function apiRoutes(db: Database) {
         )[0]
       : null;
 
-    return c.json({ agent, versions, live });
+    return c.json({
+      agent,
+      versions,
+      live,
+      toolIds: live ? await toolIdsOf(live.id) : [],
+      knowledgeBaseIds: live ? await knowledgeBaseIdsOf(live.id) : [],
+    });
   });
 
   /**
@@ -284,6 +385,13 @@ export function apiRoutes(db: Database) {
       greeting?: string;
       promptMode?: "prepend_base_rules" | "verbatim";
       config?: unknown;
+      /**
+       * The tools this version may call. Omitted means "the same as the
+       * version being replaced", so a prompt edit cannot quietly drop them.
+       */
+      toolIds?: unknown;
+      /** The knowledge bases this version searches, on the same terms. */
+      knowledgeBaseIds?: unknown;
     };
 
     if (!body.instructions?.trim()) {
@@ -305,6 +413,30 @@ export function apiRoutes(db: Database) {
       }
       throw error;
     }
+
+    const toolIds = await attachments(
+      body.toolIds,
+      "toolIds",
+      () => (agent.liveVersionId ? toolIdsOf(agent.liveVersionId) : Promise.resolve([])),
+      async (ids) =>
+        (await db.select({ id: tools.id }).from(tools).where(and(eq(tools.orgId, session.orgId), inArray(tools.id, ids))))
+          .length,
+    );
+    if ("error" in toolIds) return c.json({ error: toolIds.error }, toolIds.status);
+
+    const knowledgeBaseIds = await attachments(
+      body.knowledgeBaseIds,
+      "knowledgeBaseIds",
+      () => (agent.liveVersionId ? knowledgeBaseIdsOf(agent.liveVersionId) : Promise.resolve([])),
+      async (ids) =>
+        (
+          await db
+            .select({ id: knowledgeBases.id })
+            .from(knowledgeBases)
+            .where(and(eq(knowledgeBases.orgId, session.orgId), inArray(knowledgeBases.id, ids)))
+        ).length,
+    );
+    if ("error" in knowledgeBaseIds) return c.json({ error: knowledgeBaseIds.error }, knowledgeBaseIds.status);
 
     const published = await db.transaction(async (tx) => {
       const counted = await tx
@@ -329,6 +461,17 @@ export function apiRoutes(db: Database) {
           })
           .returning()
       )[0]!;
+
+      if (toolIds.ids.length > 0) {
+        await tx
+          .insert(agentTools)
+          .values(toolIds.ids.map((toolId) => ({ agentVersionId: version.id, toolId })));
+      }
+      if (knowledgeBaseIds.ids.length > 0) {
+        await tx
+          .insert(agentKnowledgeBases)
+          .values(knowledgeBaseIds.ids.map((knowledgeBaseId) => ({ agentVersionId: version.id, knowledgeBaseId })));
+      }
 
       await tx
         .update(agents)
@@ -429,6 +572,10 @@ export function apiRoutes(db: Database) {
     if (updated.length === 0) return c.json({ error: "no such number" }, 404);
     return c.json({ id: updated[0]!.id, agentId: updated[0]!.agentId });
   });
+
+  app.route("/", outboundRoutes(db));
+  app.route("/", workspaceRoutes(db));
+  app.route("/", insightsRoutes(db, dispatcher));
 
   // --- usage ---------------------------------------------------------------
 

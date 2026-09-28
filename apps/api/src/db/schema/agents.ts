@@ -43,6 +43,16 @@ export const agents = pgTable(
     draftVersionId: uuid("draft_version_id"),
     liveVersionId: uuid("live_version_id"),
 
+    /**
+     * An experiment: this share of calls goes to the candidate version
+     * instead of the live one, chosen per call. Both stay immutable, so every
+     * call record still names exactly what it ran on, and analytics can
+     * compare the two by disposition and latency. No FK, like the pointers
+     * above; see migration 0002.
+     */
+    candidateVersionId: uuid("candidate_version_id"),
+    candidatePercent: integer("candidate_percent").notNull().default(0),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),

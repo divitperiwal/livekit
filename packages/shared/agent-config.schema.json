@@ -1,4 +1,109 @@
 {
+  "$defs": {
+    "AnalysisField": {
+      "additionalProperties": false,
+      "description": "One value to pull out of a finished call: a callback time, a budget.\n\nSingle-word keys, for the same reason as :class:`TransferTarget`.",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "default": "string",
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "enum"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Description",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "maxLength": 40,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AnalysisField",
+      "type": "object"
+    },
+    "ClosingLine": {
+      "additionalProperties": false,
+      "description": "The line that closes a call during some hours of the day.\n\nHours are in the agent's timezone, ``start`` inclusive and ``end``\nexclusive. A row whose ``start`` is after its ``end`` runs through\nmidnight, and one where they are equal covers the whole day -- so no pair\nof hours is invalid, and there is no cross-field rule for the control\nplane's schema to miss. The first row that matches wins.\n\n``{{caller_name}}`` in the text is the name the model heard; missing, it\nrenders as nothing.",
+      "properties": {
+        "start": {
+          "maximum": 23,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "end": {
+          "maximum": 24,
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "text"
+      ],
+      "title": "ClosingLine",
+      "type": "object"
+    },
+    "TransferTarget": {
+      "additionalProperties": false,
+      "description": "Somewhere the agent may hand a phone call over to.\n\nField names are single words on purpose: the control plane converts only\ntop-level keys between camelCase and snake_case, so a nested key that\nneeded converting would be read differently on each side.",
+      "properties": {
+        "name": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "number": {
+          "pattern": "^\\+[1-9][0-9]{6,14}$",
+          "title": "Number",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "number"
+      ],
+      "title": "TransferTarget",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "The stored configuration of an agent version. Generated from automitra_worker.agent_config_model; edit that model, not this file. Enumerated values come from livekit-plugins-sarvam 1.8.1.",
   "properties": {
@@ -10,6 +115,11 @@
       ],
       "title": "Stt Model",
       "type": "string"
+    },
+    "stt_realtime": {
+      "default": true,
+      "title": "Stt Realtime",
+      "type": "boolean"
     },
     "stt_mode": {
       "default": "codemix",
@@ -113,10 +223,19 @@
       "type": "number"
     },
     "max_inr_per_min": {
-      "default": 0.0,
-      "minimum": 0.0,
-      "title": "Max Inr Per Min",
-      "type": "number"
+      "anyOf": [
+        {
+          "const": 0,
+          "type": "integer"
+        },
+        {
+          "maximum": 2.0,
+          "minimum": 1.0,
+          "type": "number"
+        }
+      ],
+      "default": 2.0,
+      "title": "Max Inr Per Min"
     },
     "budget_warn_at": {
       "default": 0.7,
@@ -202,9 +321,253 @@
       "title": "Prompt Mode",
       "type": "string"
     },
+    "greeting_mode": {
+      "default": "instructions",
+      "enum": [
+        "instructions",
+        "verbatim"
+      ],
+      "title": "Greeting Mode",
+      "type": "string"
+    },
+    "recording_notice": {
+      "default": "",
+      "maxLength": 300,
+      "title": "Recording Notice",
+      "type": "string"
+    },
     "timezone": {
       "default": "Asia/Kolkata",
       "title": "Timezone",
+      "type": "string"
+    },
+    "end_call_enabled": {
+      "default": true,
+      "title": "End Call Enabled",
+      "type": "boolean"
+    },
+    "closing_lines": {
+      "items": {
+        "$ref": "#/$defs/ClosingLine"
+      },
+      "maxItems": 12,
+      "title": "Closing Lines",
+      "type": "array"
+    },
+    "transfer_targets": {
+      "items": {
+        "$ref": "#/$defs/TransferTarget"
+      },
+      "maxItems": 10,
+      "title": "Transfer Targets",
+      "type": "array"
+    },
+    "voicemail_detection": {
+      "default": true,
+      "title": "Voicemail Detection",
+      "type": "boolean"
+    },
+    "voicemail_action": {
+      "default": "hangup",
+      "enum": [
+        "hangup",
+        "leave_message"
+      ],
+      "title": "Voicemail Action",
+      "type": "string"
+    },
+    "voicemail_message": {
+      "default": "",
+      "maxLength": 1000,
+      "title": "Voicemail Message",
+      "type": "string"
+    },
+    "analysis_enabled": {
+      "default": true,
+      "title": "Analysis Enabled",
+      "type": "boolean"
+    },
+    "dispositions": {
+      "items": {
+        "maxLength": 40,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Dispositions",
+      "type": "array"
+    },
+    "analysis_fields": {
+      "items": {
+        "$ref": "#/$defs/AnalysisField"
+      },
+      "maxItems": 20,
+      "title": "Analysis Fields",
+      "type": "array"
+    },
+    "qa_criteria": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 10,
+      "title": "Qa Criteria",
+      "type": "array"
+    },
+    "silence_timeout": {
+      "default": 15.0,
+      "maximum": 120.0,
+      "minimum": 5.0,
+      "title": "Silence Timeout",
+      "type": "number"
+    },
+    "silence_checks": {
+      "default": 2,
+      "maximum": 5,
+      "minimum": 0,
+      "title": "Silence Checks",
+      "type": "integer"
+    },
+    "dtmf_input": {
+      "default": true,
+      "title": "Dtmf Input",
+      "type": "boolean"
+    },
+    "fallback_llm": {
+      "anyOf": [
+        {
+          "enum": [
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "openai/gpt-4.1",
+            "openai/gpt-4.1-mini",
+            "openai/gpt-4.1-nano",
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-5-nano",
+            "openai/gpt-5.1",
+            "openai/gpt-5.1-chat-latest",
+            "openai/gpt-5.2",
+            "openai/gpt-5.2-chat-latest",
+            "openai/gpt-5.3-chat-latest",
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano",
+            "openai/gpt-5.5",
+            "openai/chat-latest",
+            "openai/gpt-oss-120b",
+            "google/gemini-3.1-pro",
+            "google/gemini-3-flash",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
+            "moonshotai/kimi-k2.5",
+            "moonshotai/kimi-k2.6",
+            "deepseek-ai/deepseek-v3",
+            "deepseek-ai/deepseek-v3.2",
+            "zai/glm-5.1",
+            "xai/grok-4-1-fast-non-reasoning",
+            "xai/grok-4-1-fast-reasoning",
+            "xai/grok-4.20-0309-non-reasoning",
+            "xai/grok-4.20-0309-reasoning",
+            "xai/grok-4.20-multi-agent-0309",
+            "xai/grok-4.3",
+            "xai/grok-4.5"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Llm"
+    },
+    "fallback_stt": {
+      "anyOf": [
+        {
+          "enum": [
+            "deepgram/nova-3",
+            "deepgram/nova-3-medical",
+            "deepgram/nova-2",
+            "deepgram/nova-2-medical",
+            "deepgram/nova-2-conversationalai",
+            "deepgram/nova-2-phonecall",
+            "deepgram/flux-general",
+            "deepgram/flux-general-en",
+            "deepgram/flux-general-multi",
+            "cartesia/ink-whisper",
+            "cartesia/ink-2",
+            "assemblyai/universal-streaming",
+            "assemblyai/universal-streaming-multilingual",
+            "assemblyai/u3-rt-pro",
+            "assemblyai/universal-3-5-pro",
+            "xai/stt-1",
+            "speechmatics/enhanced",
+            "speechmatics/standard",
+            "speechmatics/linden-1",
+            "inworld/inworld-stt-1",
+            "google/gemini-3.5-transcribe-live"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Stt"
+    },
+    "fallback_tts": {
+      "anyOf": [
+        {
+          "enum": [
+            "cartesia",
+            "cartesia/sonic-3.5",
+            "cartesia/sonic-3",
+            "cartesia/sonic-2",
+            "cartesia/sonic-turbo",
+            "cartesia/sonic",
+            "cartesia/sonic-3-latest",
+            "cartesia/sonic-latest",
+            "deepgram",
+            "deepgram/aura",
+            "deepgram/aura-2",
+            "rime",
+            "rime/coda",
+            "rime/mistv2",
+            "rime/mistv3",
+            "rime/mist",
+            "inworld",
+            "inworld/inworld-tts-2",
+            "inworld/inworld-tts-1.5-max",
+            "inworld/inworld-tts-1.5-mini",
+            "inworld/inworld-tts-1.5",
+            "inworld/inworld-tts-1-max",
+            "inworld/inworld-tts-1",
+            "xai/tts-1",
+            "fishaudio",
+            "fishaudio/s2.1-pro",
+            "fishaudio/s2.1-pro-free",
+            "fishaudio/s2-pro"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Tts"
+    },
+    "fallback_tts_voice": {
+      "default": "",
+      "maxLength": 100,
+      "title": "Fallback Tts Voice",
       "type": "string"
     }
   },

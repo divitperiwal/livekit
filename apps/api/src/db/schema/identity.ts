@@ -61,6 +61,13 @@ export const orgs = pgTable(
     recordCalls: boolean("record_calls").notNull().default(false),
     recordingRetentionDays: integer("recording_retention_days").notNull().default(30),
 
+    /**
+     * Mask phone numbers, emails, card numbers, Aadhaar and PAN in stored
+     * transcripts and summaries. Applied as they are written, so the
+     * unmasked text never reaches the database at all.
+     */
+    redactPii: boolean("redact_pii").notNull().default(false),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -105,6 +112,30 @@ export const orgMembers = pgTable(
     uniqueIndex("org_members_pkey").on(t.orgId, t.userId),
     index("org_members_user_idx").on(t.userId),
   ],
+);
+
+/**
+ * Invitations to join an organisation.
+ *
+ * The link carries a random token; only its hash is stored, like an API key.
+ * Accepting creates the account if there is none, and adds the membership.
+ */
+export const invites = pgTable(
+  "invites",
+  {
+    id: id(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    email: citext("email").notNull(),
+    role: memberRole("role").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("invites_token_hash_key").on(t.tokenHash), index("invites_org_idx").on(t.orgId)],
 );
 
 export const apiKeys = pgTable(

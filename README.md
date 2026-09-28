@@ -75,9 +75,211 @@ cd apps/api && bun run dev     # the control plane, :3000
 cd apps/web && bun run dev     # the dashboard
 ```
 
-Sign in as `owner@kbsmotors.test` with the password `db:seed` printed. Four
-screens: calls and their transcripts, agents, numbers, usage. See
-[apps/web/README.md](apps/web/README.md).
+Sign in as `owner@kbsmotors.test` with the password `db:seed` printed. The
+screens: calls with their transcripts, analysis and recordings; analytics; agents (with test suites and experiments), tools,
+knowledge, campaigns, numbers, the do-not-call list, usage, and settings
+(recording, API keys, webhooks). See [apps/web/README.md](apps/web/README.md).
+
+## What an agent can do on a call
+
+**Tools.** A tool is a customer's HTTP endpoint, saved in the dashboard and
+attached to an agent version. The model sees its JSON Schema; when it calls
+it, the worker sends the arguments to the URL (as JSON, or as the query string
+for `GET`) and gives the model the response, optionally cut down by a
+`{{path}}` template. Credentials (bearer, API-key header or HMAC signature) are
+encrypted at rest with `SECRETS_KEY`. Only the worker receives them
+decrypted, and never through the cache. Every request goes through the SSRF
+guard in `ssrf.py`: the address is checked and then pinned for the
+connection, and redirects are not followed. A tool that runs past 1.5 seconds
+(or one marked slow) makes the agent say it is checking, so the caller doesn't
+sit in silence.
+
+**Variables.** `{{name}}` in a prompt, greeting or voicemail message is filled
+from the call's variables, which for a campaign are the contact's CSV columns.
+`{{name|there}}` gives a fallback. A missing value renders as nothing, never
+as braces read aloud.
+
+**Ending and transferring.** The agent gets an `end_call` tool, so it can
+hang up after the goodbye instead of holding the line open. Its
+`do_not_call` flag adds the caller to the organisation's do-not-call list.
+With transfer targets configured it also gets `transfer_call`, a cold
+transfer by SIP REFER. **The carrier trunk must allow transfers**, and
+minutes after the handoff are the carrier's, not billed to the call. When the
+agent's session closes for any reason, the room is deleted, which hangs up
+the phone leg.
+
+## Outbound campaigns
+
+A campaign is an agent, a caller ID, a list of contacts, calling hours and a
+retry policy. The dialer runs in the background process, alongside webhook
+delivery and recording retention:
+
+```bash
+cd apps/api && bun run background
+```
+
+Every few seconds it moves finished attempts on, and dispatches the agent
+for each running campaign whose window is open, up to its concurrency. Each
+finished attempt ends as completed, a retry after a wait, or exhausted.
+**The worker places the call itself.** It dials with `wait_until_answered`,
+so busy, declined and unanswered calls come back as distinct outcomes.
+LiveKit's answering-machine detector listens from the first word. A machine
+is hung up on, or left a message, per the agent's settings. The greeting is
+held until the detector decides.
+
+Some guarantees, each covered by a test in `apps/api/src/services/dialer.test.ts`:
+
+- Never more calls in flight than the campaign's concurrency, even with two
+  dialers running. Claiming holds a per-campaign advisory lock.
+- The do-not-call list is checked when a contact is dialled, not only when
+  the list is uploaded.
+- Indian numbers are never called outside 09:00–21:00 India time, whatever the
+  campaign's own schedule says. Check the current TRAI rules for your category
+  of call; this is the platform's ceiling, not legal advice.
+- A dispatch that never becomes a call is counted as a failed attempt after
+  five minutes, instead of holding a slot forever. A dispatch LiveKit refuses
+  outright is handed back without using an attempt.
+- A number that doesn't exist (SIP 404/410/484/604) is not retried.
+
+The national DND registry is **not** checked. Only the organisation's own
+list is.
+
+## After the call
+
+**Analysis.** When an answered call ends, the worker asks the same Sarvam
+model for a summary, one of the agent's dispositions, and the fields the
+agent defines, such as `callback_time` or `budget`. It runs in the job's
+`on_session_end` hook: the line is hung up first, so nobody waits for it, and
+it finishes before the call is finalised. The result and its tokens go out
+with the call and are billed with it. The model's answer is treated as
+untrusted: a disposition the agent didn't define, or a value of the wrong
+type, is dropped rather than stored.
+
+**Recording.** Off until an organisation turns it on in Settings. The worker
+then starts LiveKit Egress once the call is answered, mixed audio to one OGG
+file in an S3-compatible bucket (`RECORDING_S3_*`, set on both the worker and
+the API). The greeting tells the caller the call is recorded. Only the object
+key is stored. The dashboard signs a playback link that lasts ten minutes, and
+the background process deletes recordings past the organisation's retention.
+
+**Webhooks.** `call.ended` (the call, its analysis and transcript) and
+`campaign.completed`. Events are queued in the same transaction as the
+change they report, then delivered by the background process. Each is
+signed like tool calls:
+
+```
+X-Automitra-Timestamp: <unix seconds>
+X-Automitra-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">
+X-Automitra-Event-Id:  call.ended:<call id>   (dedupe on this; delivery is at least once)
+```
+
+A failing endpoint is retried after 1m, 5m, 30m, 2h, 6h and 12h, then given
+up on. Webhook URLs go through the same SSRF defence as tools. It's
+reimplemented for the control plane in `safe-fetch.ts`: the address is checked,
+then pinned for the connection, and TLS still verifies the hostname.
+
+**Public API.** `/v1`, with an API key from Settings (`Authorization: Bearer
+am_live_…`), scoped to one organisation and to `calls:read`, `calls:write`,
+`campaigns:read` or `campaigns:write`:
+
+| | |
+| --- | --- |
+| `POST /v1/calls` | `{ agentId, to, variables?, fromNumberId? }` → `202 { requestId }`. The agent is dispatched to dial; the same checks as a campaign apply (do-not-call, Indian calling hours, credit). |
+| `GET /v1/calls?requestId=&disposition=&campaignId=&before=` | Calls, newest first, in the webhook's shape |
+| `GET /v1/calls/:id` | One call with its transcript |
+| `GET /v1/campaigns/:id`, `GET /v1/campaigns/:id/contacts` | Progress |
+| `POST /v1/campaigns/:id/contacts` | `{ contacts: [{ phone, variables }] }` |
+| `POST /v1/campaigns/:id/start` / `pause` / `resume` / `cancel` | |
+
+Rate-limited per key (`PUBLIC_API_RATE_PER_MIN`, default 300).
+
+**Knowledge.** Reference documents, pasted, uploaded as text or fetched from
+a URL once, are split into passages. Agents they're attached to get a
+`search_knowledge` tool. Retrieval is Postgres full-text search with the
+`simple` configuration. It needs no embedding provider, and doesn't stem, which
+suits Hindi and Hinglish better than an English stemmer would. The trade-off is
+that it matches words, not meaning: a question phrased entirely differently
+from the document can miss. Passages reach the model marked as quotations, not
+instructions.
+
+**Integrations** with specific CRMs are not built. Webhooks push every call's
+outcome to any system that accepts HTTP, and tools let the agent read from and
+write to one mid-call. A named connector (LeadSquared, HubSpot, Zoho) is a
+thin layer over those two.
+
+## Keeping agents good
+
+**Test suites.** A scenario describes a caller (who they are, what they want,
+how they talk) and what the agent must do. A run plays every scenario against
+a version in text: the model plays the caller, the agent uses its real prompt
+and model, and a judge scores each requirement pass or fail. Tools are never
+called. Each answers with the scenario's canned response, so testing a
+booking agent books nothing. Runs are dispatched to the worker fleet from the
+dashboard, or run locally:
+
+```bash
+uv run evals <run id>     # against CONTROL_PLANE_URL
+```
+
+**Experiments.** Send a share of an agent's calls (1–99%) to another
+version. The split is decided per call, after the cache. Both versions keep
+their own call records, and Analytics compares them on the same measures.
+
+**Analytics.** Answer rate, dispositions, how calls ended, calls per day, and
+per-version outcomes, latency and QA pass rate, for any period and agent.
+
+**Latency.** Every reply's wait is measured from the SDK's metrics: end of
+turn, then the model's first token, then the voice's first audio. Each call
+records the median, 95th percentile and worst, and which component the time
+went to.
+
+**QA scoring.** An agent can list what a good call looks like, for example
+"confirmed the appointment time". Each call is scored on those criteria with
+the post-call analysis.
+
+**Failover.** Optional LiveKit Inference models for speech-to-text, the LLM
+and the voice. They take over mid-call when Sarvam errors or times out. They
+only work on LiveKit Cloud and are billed there. A voice failover changes the
+voice, and usage from a fallback model is recorded under the configured Sarvam
+model names, so a call that failed over is costed at Sarvam's rates.
+
+**Silence and the keypad.** After `silenceTimeout` seconds of silence on both
+sides, the agent checks the caller is still there. After `silenceChecks`
+unanswered checks it says goodbye and hangs up. Keys the caller presses reach
+the agent as `[keypad: 1 2]`. On calls the worker places, the agent can also
+press keys itself, to get through a phone menu.
+
+## Team and privacy
+
+**Team.** Owners and admins invite people by link (valid a week, usable
+once) and set roles. Membership is checked on every request, so a removed
+member loses access at once instead of when their session expires. An
+organisation always keeps at least one owner.
+
+**Redaction.** An organisation can have phone numbers, emails, card numbers
+(Luhn-checked), Aadhaar and PAN masked in transcripts and summaries as they
+are written, so the unmasked text is never stored. Numbers spoken as words
+("nine eight seven…") are not caught. Structured analysis fields are kept as
+the business asked for them.
+
+**Erasure.** Settings → Privacy erases one person by phone number. Their
+calls are anonymised rather than deleted: numbers, transcript, analysis,
+variables and recording are removed, and the call's billing record is kept.
+Campaign contacts are cleared, and anyone still waiting to be called is not
+called. The do-not-call entry stays, so they aren't called again.
+
+## Not built
+
+Each of these needs a vendor account or a business decision, rather than more
+code on this side:
+
+- **Payments.** Wallet top-ups (e.g. Razorpay) and GST invoices. Balances are
+  topped up with ledger entries today.
+- **Buying numbers self-serve**, or bringing your own trunk (Exotel,
+  Knowlarity, Tata). Numbers are assigned from the platform's Plivo pool.
+- **Voice cloning.** Sarvam's voices only.
+- **Named CRM connectors** (see Integrations above).
+- **Sending email.** Invites are links to copy; nothing is emailed.
 
 ## One definition of a valid agent
 
@@ -197,7 +399,7 @@ immediately with the list of valid values rather than surfacing mid-call.
 | `TTS_SPEAKER` | `ritu` | Voice; the roster is per-model (see below) |
 | `TTS_PACE` | `1.0` | Speaking rate; below 1 slower, above 1 faster |
 | `CALL_BUDGET_INR` | `0` | Hard ceiling per call in INR; `0` disables |
-| `MAX_INR_PER_MIN` | `0` | Ceiling on cost per minute; makes the agent terser rather than ending the call |
+| `MAX_INR_PER_MIN` | `2` | Ceiling on cost per minute, at most ₹2 and never off; speech over it is not synthesised |
 | `CALL_BUDGET_WARN_AT` | `0.70` | Fraction of budget at which the agent is told to be brief |
 | `CALL_BUDGET_WRAP_AT` | `0.90` | Fraction at which the agent says goodbye and hangs up |
 | `CALL_BUDGET_FAREWELL` | a polite close | What the agent says when the budget ends the call |
@@ -344,20 +546,35 @@ producing a call that wraps up on its first turn.
 ### Holding a per-minute rate
 
 `CALL_BUDGET_INR` bounds what a *call* costs. `MAX_INR_PER_MIN` bounds the
-**rate**, which is what a per-minute price actually depends on:
+**rate**, which is what a per-minute price actually depends on. Every call runs
+under it, and it cannot be switched off: the default and the maximum are both
+**₹2/min**, an agent may ask for less (down to ₹1), and `0` means the ₹2 default.
 
-```bash
-MAX_INR_PER_MIN=2.0
-```
+The guarantee is that at every moment of a call, what has been spent is at most
+₹2 × the minutes elapsed. The count never uses less than 30 seconds, so the
+greeting is affordable, and 30 seconds is also the shortest billed call. Because
+the limit holds at every moment, it holds whenever the caller hangs up. It is
+enforced in two layers:
 
-The rate is recomputed on every metrics event against wall-clock elapsed time.
-If it reaches 90% of the ceiling the agent is told to answer in a single short
-sentence until the rate falls back. It never ends the call — it makes the agent
-cheaper.
+- **Steering.** At 80% of the allowance the agent is told to answer in one
+  short sentence. At 60% the instruction is taken off again.
+- **The hard limit.** Each reply passes from the model to speech synthesis one
+  sentence at a time, and a sentence goes through only if it fits. One that
+  does not fit yet waits up to 3 seconds for the allowance to grow. After that
+  the rest of the reply is dropped. Dropped text is never synthesised, so it is
+  never billed, and it does not appear in the transcript. A model request is
+  billed even if nothing it writes is spoken, so room for the next request is
+  always held back. A request that cannot fit is not made at all.
 
 Speech-to-text is a **fixed ₹0.50/min** floor, billed on call duration however
-little the agent says, so a ceiling at or below that is rejected at startup.
-The practical floor is about ₹0.70/min.
+little the agent says, so it is counted first. That leaves ₹1.50/min for the
+agent's speech and the model, which is about 500 characters a minute, a little
+over half of continuous speech.
+
+At list prices an ordinary two-sided call already costs about ₹2/min, so on a
+talkative call expect the steering to switch on and the end of a long reply to
+be cut now and then. The ceiling covers Sarvam's charges. The carrier's
+per-minute rate for a phone call is separate and is not included.
 
 Measured cost per minute by persona, at 4 turns/min:
 
@@ -580,6 +797,15 @@ surfaces as an error rather than a call that silently never connects. Use
 | `worker/src/automitra_worker/telephony_cli.py` | The `uv run telephony` and `uv run call` commands |
 | `worker/src/automitra_worker/config.py` | Reads and validates env vars into `AgentConfig` |
 | `worker/src/automitra_worker/agent.py` | Builds the `AgentSession` and defines the worker entry point |
+| `worker/src/automitra_worker/tools.py` | Customer HTTP tools: the pinned, SSRF-checked request and response shaping |
+| `worker/src/automitra_worker/call_control.py` | `end_call`, `transfer_call`, classifying a failed dial |
+| `worker/src/automitra_worker/variables.py` | `{{placeholder}}` substitution for prompts and tool responses |
+| `worker/src/automitra_worker/analysis.py` | Post-call summary, disposition and fields |
+| `worker/src/automitra_worker/recording.py` | Starting LiveKit Egress to object storage |
+| `worker/src/automitra_worker/knowledge.py` | The `search_knowledge` tool |
+| `worker/src/automitra_worker/latency.py` | Per-turn reply latency from the SDK metrics |
+| `worker/src/automitra_worker/evals.py` | Simulated-caller test runs and their judge |
+| `worker/src/automitra_worker/eval_cli.py` | The `uv run evals` command |
 | `worker/src/automitra_worker/seed_personas/` | Business-specific call scripts, as data rather than source |
 
 ## Notes

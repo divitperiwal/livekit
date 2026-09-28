@@ -1,10 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { api, ApiError, type AgentSummary, type AgentVersion, type Me } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type AgentSummary,
+  type AgentVersion,
+  type KnowledgeBase,
+  type Me,
+  type Tool,
+} from "@/lib/api";
 import { when } from "@/lib/format";
 import { commonTimezones, options, speakersFor, ttsModels } from "@/lib/schema";
 
+import { ExperimentForm } from "../agent-forms";
 import { AgentEditor } from "./editor";
 import { TestCall } from "./test-call";
 
@@ -14,6 +23,8 @@ interface AgentDetail {
   agent: AgentSummary;
   versions: Array<{ id: string; version: number; publishedAt: string | null }>;
   live: AgentVersion | null;
+  toolIds: string[];
+  knowledgeBaseIds: string[];
 }
 
 export default async function AgentPage({
@@ -25,10 +36,14 @@ export default async function AgentPage({
 
   let detail: AgentDetail;
   let me: Me;
+  let tools: Tool[];
+  let knowledgeBases: KnowledgeBase[];
   try {
-    [detail, me] = await Promise.all([
+    [detail, me, { tools }, { knowledgeBases }] = await Promise.all([
       api<AgentDetail>(`/agents/${id}`),
       api<Me>("/me"),
+      api<{ tools: Tool[] }>("/tools"),
+      api<{ knowledgeBases: KnowledgeBase[] }>("/knowledge-bases"),
     ]);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) notFound();
@@ -49,6 +64,9 @@ export default async function AgentPage({
       ttsModels().map((model) => [model, speakersFor(model)]),
     ),
     timezones: commonTimezones(),
+    fallbackLlms: options("fallback_llm"),
+    fallbackStts: options("fallback_stt"),
+    fallbackTtss: options("fallback_tts"),
   };
 
   return (
@@ -84,10 +102,35 @@ export default async function AgentPage({
 
       {live ? <TestCall agentId={agent.id} /> : null}
 
+      <div className="flex flex-wrap gap-4 text-sm">
+        <Link href={`/agents/${agent.id}/tests`} className="underline-offset-4 hover:underline">
+          Test suite →
+        </Link>
+        <Link href={`/analytics?agentId=${agent.id}`} className="underline-offset-4 hover:underline">
+          Analytics →
+        </Link>
+      </div>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium">Experiment</h2>
+        <ExperimentForm
+          agentId={agent.id}
+          liveVersionId={agent.liveVersionId}
+          candidateVersionId={agent.candidateVersionId ?? null}
+          candidatePercent={agent.candidatePercent ?? 0}
+          versions={versions}
+          readOnly={me.role === "viewer"}
+        />
+      </section>
+
       <AgentEditor
         agentId={agent.id}
         live={live}
         choices={choices}
+        tools={tools}
+        toolIds={detail.toolIds}
+        knowledgeBases={knowledgeBases}
+        knowledgeBaseIds={detail.knowledgeBaseIds}
         readOnly={me.role === "viewer"}
       />
     </div>

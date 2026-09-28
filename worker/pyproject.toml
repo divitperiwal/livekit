@@ -20,6 +20,7 @@ agent = "automitra_worker.agent:main"
 costs = "automitra_worker.cli:main"
 telephony = "automitra_worker.telephony_cli:main"
 call = "automitra_worker.telephony_cli:call_main"
+evals = "automitra_worker.eval_cli:main"
 
 [dependency-groups]
 dev = [

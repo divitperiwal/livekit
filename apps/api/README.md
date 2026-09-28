@@ -3,8 +3,9 @@
 The control plane. Owns the database and everything that is not the live call:
 organisations, users, agents, phone numbers, tools, call records and billing.
 
-Currently the schema, the internal API the worker talks to, and billing. The
-public API and the dashboard come later.
+The schema, the internal API the worker talks to, billing, the dashboard's
+API, the public API (`/v1`), and the background process: dialer, webhook
+delivery, recording retention.
 
 ## Running it
 
@@ -39,7 +40,10 @@ bun run dev
 | `GET /internal/resolve` | which agent a call runs as |
 | `POST /internal/calls` | open a call record |
 | `POST /internal/calls/:id/events` | append transcript turns |
-| `POST /internal/calls/:id/finalize` | close a call and record usage |
+| `POST /internal/calls/:id/finalize` | close a call, record usage and analysis, queue `call.ended` |
+| `GET /internal/knowledge/search` | passages for the agent's `search_knowledge` tool |
+| `GET /internal/eval-runs/:id` | a test run for the worker to play: scenarios and the version under test |
+| `POST /internal/eval-runs/:id/results`, `/finish` | its results, as each scenario finishes |
 
 `/internal/*` requires `x-internal-secret`. These endpoints serve any tenant's
 configuration and accept writes against any call, so they carry no per-tenant
@@ -60,6 +64,32 @@ that starts cold and fails only in production.
 
 Writes are all idempotent, on `lkJobId`, on `(callId, seq)` and on the usage
 record's key. The worker cannot promise to call any of them exactly once.
+
+`/internal/resolve` also returns the version's enabled tools with their
+secrets decrypted. That part is loaded after the cache on every call, never
+from it, so decrypted credentials never reach Redis, and a tool that is edited
+or disabled takes effect on the next call.
+
+## The background process
+
+```bash
+bun run background
+```
+
+A separate process from the API, so each can be deployed and restarted
+without pausing the other. Each tick it runs the dialer (see
+`src/services/dialer.ts` for what one round does and why claiming is locked
+per campaign) and webhook delivery (`src/services/webhooks.ts`, leased so two
+processes never send the same event). On slower clocks it also runs
+`sweepStaleCalls`, which nothing else schedules, deletes expired recordings,
+and prunes old deliveries. The campaign rules are pure
+functions in `src/services/campaign-rules.ts`: calling windows, the Indian
+outer bound, retries, phone-number normalisation and CSV parsing.
+
+A campaign the dialer can't serve is paused with a `statusReason` rather than
+failing call after call. The reasons are no credit, no published agent
+version, or a caller ID the organisation no longer holds. It stays paused
+until someone resumes it.
 
 ## Billing
 

@@ -144,6 +144,15 @@ export function validateAgentConfig(config: unknown): AgentConfigJson {
     }
   }
 
+  // The ceiling is "0, or a number in range", which ajv reports as a failed
+  // constant and a failed range at once. One sentence says it better.
+  if (fieldErrors.maxInrPerMin) {
+    const range = (schema.properties as Record<string, { anyOf?: Array<{ minimum?: number; maximum?: number }> }>)
+      .max_inr_per_min?.anyOf?.find((option) => option.maximum !== undefined);
+    fieldErrors.maxInrPerMin =
+      `must be between ${range?.minimum} and ${range?.maximum} rupees, or 0 for the platform ceiling`;
+  }
+
   // Only worth checking once both fields are individually valid; otherwise the
   // message would compound an error already being reported.
   if (!fieldErrors.ttsModel && !fieldErrors.ttsSpeaker) {

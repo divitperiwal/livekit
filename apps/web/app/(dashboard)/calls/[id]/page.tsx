@@ -93,6 +93,13 @@ export default async function CallPage({
     (e) => e.type === "user_message" || e.type === "agent_message",
   );
 
+  // Signed per page view and short-lived, so a copied link stops working soon
+  // after; a missing or expired recording just means no player.
+  const recording = call.recordingKey
+    ? await api<{ url: string }>(`/calls/${id}/recording`).catch(() => null)
+    : null;
+  const analysisFields = Object.entries(call.analysis ?? {});
+
   return (
     <div className="space-y-6">
       <div>
@@ -147,6 +154,79 @@ export default async function CallPage({
           </Field>
           <Field label="Tokens out">{usage.llmCompletionTokens.toLocaleString()}</Field>
         </dl>
+      ) : null}
+
+      {call.summary || call.disposition || analysisFields.length > 0 ? (
+        <section className="space-y-3 rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium">After the call</h2>
+            {call.disposition ? (
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-xs dark:bg-neutral-800">
+                {call.disposition}
+              </span>
+            ) : null}
+          </div>
+          {call.summary ? <p className="text-sm">{call.summary}</p> : null}
+          {analysisFields.length > 0 ? (
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {analysisFields.map(([name, value]) => (
+                <Field key={name} label={name.replace(/_/g, " ")}>
+                  {value === null || value === undefined
+                    ? "—"
+                    : typeof value === "boolean"
+                      ? value
+                        ? "yes"
+                        : "no"
+                      : String(value)}
+                </Field>
+              ))}
+            </dl>
+          ) : null}
+        </section>
+      ) : null}
+
+      {call.qa && call.qa.length > 0 ? (
+        <section className="space-y-2">
+          <h2 className="text-sm font-medium">Quality checks</h2>
+          <ul className="space-y-1 text-sm">
+            {call.qa.map((q) => (
+              <li key={q.criterion}>
+                <span
+                  className={
+                    q.passed === true
+                      ? "text-green-700 dark:text-green-400"
+                      : q.passed === false
+                        ? "text-red-600"
+                        : "text-neutral-500"
+                  }
+                >
+                  {q.passed === true ? "✓ met" : q.passed === false ? "✗ missed" : "? unclear"}
+                </span>{" "}
+                {q.criterion}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {call.latency ? (
+        <dl className="grid grid-cols-2 gap-4 rounded-md border border-neutral-200 p-4 text-neutral-600 sm:grid-cols-4 dark:border-neutral-800 dark:text-neutral-400">
+          <Field label="Reply wait, median">{call.latency.p50.toFixed(2)}s</Field>
+          <Field label="95th percentile">{call.latency.p95.toFixed(2)}s</Field>
+          <Field label="Worst">{call.latency.max.toFixed(2)}s</Field>
+          <Field label="Of which">
+            <span title="end of turn · language model · voice">
+              {call.latency.eou.toFixed(2)} · {call.latency.llm.toFixed(2)} · {call.latency.tts.toFixed(2)}
+            </span>
+          </Field>
+        </dl>
+      ) : null}
+
+      {recording ? (
+        <section className="space-y-2">
+          <h2 className="text-sm font-medium">Recording</h2>
+          <audio controls preload="none" src={recording.url} className="w-full" />
+        </section>
       ) : null}
 
       <section className="space-y-3">

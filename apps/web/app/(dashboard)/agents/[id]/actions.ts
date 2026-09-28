@@ -44,14 +44,105 @@ export async function publish(
     sttModel: formData.get("sttModel"),
     sttMode: formData.get("sttMode"),
     sttLanguage: formData.get("sttLanguage"),
+    sttRealtime: formData.get("sttRealtime") === "on",
     llmModel: formData.get("llmModel"),
     ttsModel: formData.get("ttsModel"),
     ttsSpeaker: formData.get("ttsSpeaker"),
     ttsLanguage: formData.get("ttsLanguage"),
     ttsPace: number("ttsPace"),
     budgetInr: number("budgetInr") ?? 0,
+    // Blank is the platform ceiling (0), not "no limit": there is no such option.
+    maxInrPerMin: number("maxInrPerMin") ?? 0,
     timezone: formData.get("timezone"),
+    // An unticked box is absent from the form, which here means false.
+    endCallEnabled: formData.get("endCallEnabled") === "on",
+    voicemailDetection: formData.get("voicemailDetection") === "on",
+    voicemailAction: formData.get("voicemailAction"),
+    voicemailMessage: formData.get("voicemailMessage"),
+    greetingMode: formData.get("greetingVerbatim") === "on" ? "verbatim" : "instructions",
+    recordingNotice: String(formData.get("recordingNotice") ?? "").trim(),
   };
+
+  // Blank rows are someone who clicked "add" and changed their mind, not a
+  // target with no number.
+  try {
+    const rows = JSON.parse(String(formData.get("transferTargets") ?? "[]")) as Array<{
+      name: string;
+      number: string;
+      description: string;
+    }>;
+    config.transferTargets = rows
+      .map((row) => ({
+        name: row.name.trim(),
+        number: row.number.replace(/[\s-]/g, ""),
+        description: row.description.trim(),
+      }))
+      .filter((row) => row.name || row.number);
+  } catch {
+    return { error: "The transfer numbers could not be read." };
+  }
+
+  // Hours go as numbers, or as whatever was typed when that is not one, so the
+  // API names the bad row rather than this quietly dropping it.
+  try {
+    const rows = JSON.parse(String(formData.get("closingLines") ?? "[]")) as Array<{
+      start: string;
+      end: string;
+      text: string;
+    }>;
+    const hour = (raw: string): number | string => {
+      const value = Number(raw.trim());
+      return raw.trim() !== "" && Number.isInteger(value) ? value : raw;
+    };
+    config.closingLines = rows
+      .filter((row) => row.start.trim() || row.end.trim() || row.text.trim())
+      .map((row) => ({ start: hour(row.start), end: hour(row.end), text: row.text.trim() }));
+  } catch {
+    return { error: "The closing lines could not be read." };
+  }
+
+  config.analysisEnabled = formData.get("analysisEnabled") === "on";
+  config.qaCriteria = String(formData.get("qaCriteria") ?? "")
+    .split("\n")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  config.dtmfInput = formData.get("dtmfInput") === "on";
+  const silenceTimeout = number("silenceTimeout");
+  const silenceChecks = number("silenceChecks");
+  if (silenceTimeout !== undefined) config.silenceTimeout = silenceTimeout;
+  if (silenceChecks !== undefined) config.silenceChecks = silenceChecks;
+  // An empty choice is "no fallback": sent as null, which the schema takes
+  // as the default, rather than dropped and left at whatever it was.
+  for (const name of ["fallbackLlm", "fallbackStt", "fallbackTts"]) {
+    config[name] = String(formData.get(name) ?? "") || null;
+  }
+  config.fallbackTtsVoice = String(formData.get("fallbackTtsVoice") ?? "").trim();
+  config.dispositions = String(formData.get("dispositions") ?? "")
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean);
+  try {
+    const rows = JSON.parse(String(formData.get("analysisFields") ?? "[]")) as Array<{
+      name: string;
+      type: string;
+      description: string;
+      options: string;
+    }>;
+    config.analysisFields = rows
+      .filter((row) => row.name.trim())
+      .map((row) => ({
+        name: row.name.trim(),
+        type: row.type,
+        ...(row.type === "enum"
+          ? { options: row.options.split(",").map((o) => o.trim()).filter(Boolean) }
+          : { description: row.description.trim() }),
+      }));
+  } catch {
+    return { error: "The analysis fields could not be read." };
+  }
+
+  const toolIds = formData.getAll("toolIds").map(String);
+  const knowledgeBaseIds = formData.getAll("knowledgeBaseIds").map(String);
 
   // The API rejects unknown keys, so a blank field has to be absent rather
   // than null -- it means "use the default", not "set this to nothing".
@@ -70,7 +161,7 @@ export async function publish(
         "content-type": "application/json",
         ...(session ? { cookie: `${SESSION_COOKIE}=${session}` } : {}),
       },
-      body: JSON.stringify({ instructions, greeting, promptMode, config }),
+      body: JSON.stringify({ instructions, greeting, promptMode, config, toolIds, knowledgeBaseIds }),
       cache: "no-store",
     });
   } catch {

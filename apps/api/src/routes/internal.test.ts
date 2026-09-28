@@ -78,7 +78,7 @@ beforeAll(async () => {
 
   // Start from a cold cache so the warming below is the test's own doing.
   try {
-    await redis().del(`agentlive:${agent.id}`, `agentcfg:${version.id}`);
+    await redis().del(`agentroute:${agent.id}`, `agentcfg:${version.id}`);
   } catch {
     /* the cache being unavailable is fine; resolution falls through */
   }

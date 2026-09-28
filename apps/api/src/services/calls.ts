@@ -11,9 +11,18 @@
 import { and, eq, sql as raw } from "drizzle-orm";
 
 import type { Database } from "../db/client";
-import { callEvents, calls, usageRecords } from "../db/schema";
+import { callEvents, calls, campaignContacts, orgs, suppressedNumbers, usageRecords } from "../db/schema";
 import { post } from "./ledger";
+import { callView, transcriptOf } from "./call-view";
 import { priceCall, rateCardFor } from "./pricing";
+import { redact } from "./redact";
+import { enqueue } from "./webhooks";
+
+const E164 = /^\+[1-9][0-9]{6,14}$/;
+
+// Checked before a contact id reaches a query. A malformed one would fail the
+// whole insert, and losing the call record over a bad link is the wrong trade.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface StartCallInput {
   orgId: string;
@@ -25,6 +34,15 @@ export interface StartCallInput {
   fromNumber?: string | null;
   toNumber?: string | null;
   phoneNumberId?: string | null;
+  /** False for an outbound attempt nobody picked up. Defaults to true. */
+  answered?: boolean;
+  /** The values filled into the prompt, kept so a call can be explained later. */
+  variables?: Record<string, string> | null;
+  /** The campaign contact this call is an attempt at, when the dialer placed it. */
+  campaignId?: string | null;
+  contactId?: string | null;
+  /** The public API request this call came from, so the caller can find it. */
+  requestId?: string | null;
 }
 
 /**
@@ -34,30 +52,61 @@ export interface StartCallInput {
  * rather than starting a second one. The update on conflict is deliberately
  * narrow: the room can change on a retry, but the pinned agent version must
  * not, or the call would be billed against a configuration it never ran.
+ *
+ * A dialer call also points its contact at this record, which is how the
+ * dialer later finds out how the attempt went. Scoped by organisation as well
+ * as by id, so a job whose metadata named another tenant's contact links
+ * nothing.
  */
 export async function startCall(db: Database, input: StartCallInput) {
-  const rows = await db
-    .insert(calls)
-    .values({
-      orgId: input.orgId,
-      agentId: input.agentId,
-      agentVersionId: input.agentVersionId,
-      lkRoomName: input.lkRoomName,
-      lkJobId: input.lkJobId,
-      direction: input.direction,
-      fromNumber: input.fromNumber ?? null,
-      toNumber: input.toNumber ?? null,
-      phoneNumberId: input.phoneNumberId ?? null,
-      status: "in_progress",
-      startedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: calls.lkJobId,
-      set: { lkRoomName: input.lkRoomName },
-    })
-    .returning();
+  const now = new Date();
+  const metadata: Record<string, unknown> = {};
+  if (input.variables && Object.keys(input.variables).length > 0) metadata.variables = input.variables;
+  if (input.campaignId) metadata.campaignId = input.campaignId;
+  if (input.contactId) metadata.contactId = input.contactId;
+  if (input.requestId) metadata.requestId = input.requestId;
 
-  return rows[0]!;
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .insert(calls)
+      .values({
+        orgId: input.orgId,
+        agentId: input.agentId,
+        agentVersionId: input.agentVersionId,
+        lkRoomName: input.lkRoomName,
+        lkJobId: input.lkJobId,
+        direction: input.direction,
+        fromNumber: input.fromNumber ?? null,
+        toNumber: input.toNumber ?? null,
+        phoneNumberId: input.phoneNumberId ?? null,
+        status: "in_progress",
+        startedAt: now,
+        answeredAt: input.answered === false ? null : now,
+        metadata,
+      })
+      .onConflictDoUpdate({
+        target: calls.lkJobId,
+        set: { lkRoomName: input.lkRoomName },
+      })
+      .returning();
+
+    const call = rows[0]!;
+
+    if (input.contactId && UUID.test(input.contactId)) {
+      await tx
+        .update(campaignContacts)
+        .set({ lastCallId: call.id, updatedAt: now })
+        .where(
+          and(
+            eq(campaignContacts.id, input.contactId),
+            eq(campaignContacts.orgId, call.orgId),
+            eq(campaignContacts.status, "dialing"),
+          ),
+        );
+    }
+
+    return call;
+  });
 }
 
 export interface CallEventInput {
@@ -69,7 +118,8 @@ export interface CallEventInput {
     | "tool_result"
     | "stage_change"
     | "transfer"
-    | "error";
+    | "error"
+    | "amd";
   role?: string | null;
   content?: string | null;
   payload?: unknown;
@@ -91,19 +141,29 @@ export async function appendEvents(
 ): Promise<number> {
   if (events.length === 0) return 0;
 
+  // Masked before the insert, for an organisation that asked, so the
+  // unmasked text is never stored. Tool arguments too: an agent passing the
+  // caller's number to a CRM puts it in the transcript that way.
+  const masking = await redactsPii(db, orgId);
+  const mask = (text: string | null | undefined) => (text && masking ? redact(text) : (text ?? null));
+
   const inserted = await db
     .insert(callEvents)
     .values(
-      events.map((event) => ({
-        callId,
-        orgId,
-        seq: event.seq,
-        type: event.type,
-        role: event.role ?? null,
-        content: event.content ?? null,
-        payload: (event.payload ?? {}) as object,
-        at: new Date(event.at),
-      })),
+      events.map((event) => {
+        const payload = { ...((event.payload ?? {}) as Record<string, unknown>) };
+        if (masking && typeof payload.arguments === "string") payload.arguments = redact(payload.arguments);
+        return {
+          callId,
+          orgId,
+          seq: event.seq,
+          type: event.type,
+          role: event.role ?? null,
+          content: mask(event.content),
+          payload,
+          at: new Date(event.at),
+        };
+      }),
     )
     .onConflictDoNothing({ target: [callEvents.callId, callEvents.seq] })
     .returning({ seq: callEvents.seq });
@@ -111,12 +171,30 @@ export async function appendEvents(
   return inserted.length;
 }
 
+async function redactsPii(db: Pick<Database, "select">, orgId: string): Promise<boolean> {
+  const row = (await db.select({ redact: orgs.redactPii }).from(orgs).where(eq(orgs.id, orgId)).limit(1))[0];
+  return row?.redact ?? false;
+}
+
 export interface FinalizeInput {
-  status: "completed" | "failed" | "no_answer" | "busy";
+  status: "completed" | "failed" | "no_answer" | "busy" | "voicemail";
   endReason?: string | null;
   durationSeconds?: number | null;
   billableSeconds?: number | null;
   transcriptKey?: string | null;
+  /** The caller asked, on the call, not to be called again. */
+  doNotCall?: boolean;
+  /** Where the recording was written, when the call was recorded. */
+  recordingKey?: string | null;
+  /** What the post-call analysis made of it. */
+  analysis?: {
+    summary?: string | null;
+    disposition?: string | null;
+    fields?: Record<string, unknown>;
+    qa?: Array<{ criterion: string; passed: boolean | null }>;
+  };
+  /** How long the caller waited for replies; see `calls.latency`. */
+  latency?: Record<string, number> | null;
   /**
    * What the call measurably used.
    *
@@ -154,7 +232,12 @@ export async function finalizeCall(
   // Read the card before the transaction: it is not part of what has to be
   // atomic, and holding a transaction open across an extra query is needless.
   const existing = await db
-    .select({ orgId: calls.orgId, toNumber: calls.toNumber })
+    .select({
+      orgId: calls.orgId,
+      toNumber: calls.toNumber,
+      fromNumber: calls.fromNumber,
+      direction: calls.direction,
+    })
     .from(calls)
     .where(eq(calls.id, callId))
     .limit(1);
@@ -171,6 +254,8 @@ export async function finalizeCall(
             ...input.usage,
             durationSeconds: input.durationSeconds ?? 0,
             toNumber: known.toNumber,
+            // A browser test call has no number at either end.
+            phoneLeg: Boolean(known.toNumber || known.fromNumber),
           },
           card,
         )
@@ -186,6 +271,11 @@ export async function finalizeCall(
         durationSeconds: input.durationSeconds ?? null,
         billableSeconds: priced?.billableSeconds ?? input.billableSeconds ?? null,
         transcriptKey: input.transcriptKey ?? null,
+        // Left alone when absent rather than cleared: a second finalize that
+        // knows less must not erase what the first one wrote.
+        recordingKey: typeof input.recordingKey === "string" ? input.recordingKey : undefined,
+        ...analysisColumns(input.analysis, await redactsPii(db, known.orgId)),
+        latency: input.latency && typeof input.latency === "object" ? input.latency : undefined,
         costInr: priced?.costTotalInr?.toString() ?? null,
         priceInr: priced?.priceInr?.toString() ?? null,
       })
@@ -193,6 +283,22 @@ export async function finalizeCall(
       .returning();
 
     const call = updated[0]!;
+
+    // The far end's number: whoever was called, or whoever called in. A
+    // browser test call has none, and there is nothing to suppress.
+    const farEnd = known.direction === "outbound" ? known.toNumber : known.fromNumber;
+    if (input.doNotCall && farEnd && E164.test(farEnd)) {
+      await tx
+        .insert(suppressedNumbers)
+        .values({
+          orgId: call.orgId,
+          e164: farEnd,
+          source: "call",
+          reason: "asked on a call not to be called again",
+          callId: call.id,
+        })
+        .onConflictDoNothing({ target: [suppressedNumbers.orgId, suppressedNumbers.e164] });
+    }
 
     if (input.usage && priced) {
       const inserted = await tx
@@ -238,8 +344,38 @@ export async function finalizeCall(
       }
     }
 
+    // In the same transaction as the call it reports, so an event is never
+    // sent for a call that rolled back, nor a call finalised without one.
+    await enqueue(tx, call.orgId, "call.ended", `call.ended:${call.id}`, callView(call, await transcriptOf(tx, call.id)));
+
     return call;
   });
+}
+
+/**
+ * The analysis as columns, checked for shape only.
+ *
+ * The worker has already held it to the agent's own dispositions and field
+ * types; this only stops something malformed or oversized from being stored.
+ */
+function analysisColumns(analysis: FinalizeInput["analysis"], masking: boolean) {
+  if (!analysis || typeof analysis !== "object") return {};
+  const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() ? value.slice(0, max) : null);
+  const fields =
+    analysis.fields && typeof analysis.fields === "object" && !Array.isArray(analysis.fields) ? analysis.fields : {};
+  const summary = text(analysis.summary, 2000);
+  const qa = Array.isArray(analysis.qa)
+    ? analysis.qa
+        .filter((q) => q && typeof q.criterion === "string")
+        .slice(0, 20)
+        .map((q) => ({ criterion: q.criterion.slice(0, 200), passed: typeof q.passed === "boolean" ? q.passed : null }))
+    : null;
+  return {
+    summary: summary && masking ? redact(summary) : summary,
+    disposition: text(analysis.disposition, 60),
+    analysis: JSON.stringify(fields).length <= 20_000 ? fields : {},
+    qa: qa && qa.length > 0 ? qa : null,
+  };
 }
 
 /**
@@ -251,16 +387,23 @@ export async function finalizeCall(
  * looks like a call still in progress rather than a failure.
  */
 export async function sweepStaleCalls(db: Database, olderThanSeconds = 7200) {
-  const swept = await db
-    .update(calls)
-    .set({ status: "failed", endReason: "worker_lost", endedAt: new Date() })
-    .where(
-      and(
-        eq(calls.status, "in_progress"),
-        raw`${calls.startedAt} < now() - make_interval(secs => ${olderThanSeconds})`,
-      ),
-    )
-    .returning({ id: calls.id });
+  return db.transaction(async (tx) => {
+    const swept = await tx
+      .update(calls)
+      .set({ status: "failed", endReason: "worker_lost", endedAt: new Date() })
+      .where(
+        and(
+          eq(calls.status, "in_progress"),
+          raw`${calls.startedAt} < now() - make_interval(secs => ${olderThanSeconds})`,
+        ),
+      )
+      .returning();
 
-  return swept.length;
+    // A customer's integration is waiting for these calls to end like any
+    // other, and would otherwise wait forever.
+    for (const call of swept) {
+      await enqueue(tx, call.orgId, "call.ended", `call.ended:${call.id}`, callView(call, await transcriptOf(tx, call.id)));
+    }
+    return swept.length;
+  });
 }

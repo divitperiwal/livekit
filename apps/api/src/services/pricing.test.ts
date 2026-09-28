@@ -119,6 +119,22 @@ describe("pricing a call", () => {
     expect(priced.costTotalInr).toBeCloseTo(134.68, 6);
   });
 
+  test("a call with no phone line pays no carrier", () => {
+    // A browser test call: no number at either end. The fallback rate is for
+    // a real call whose number is unknown, not for a call with no line at all.
+    const priced = priceCall(
+      { ...NOTHING, ttsCharacters: 1_000, durationSeconds: 120, toNumber: null, phoneLeg: false },
+      CARD,
+    );
+    expect(priced.costPstnInr).toBe(0);
+    expect(priced.costTotalInr).toBeCloseTo(3.0, 6);
+  });
+
+  test("an unknown number on a real call is still charged the fallback", () => {
+    const priced = priceCall({ ...NOTHING, durationSeconds: 60, toNumber: null }, CARD);
+    expect(priced.costPstnInr).toBeCloseTo(3.0, 6);
+  });
+
   test("cached tokens are a subset of the prompt, not an addition", () => {
     // Providers report cached tokens within the prompt total. Charging both at
     // the fresh rate would overbill every long call.

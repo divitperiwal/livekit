@@ -12,8 +12,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+interface PropertySchema {
+  enum?: string[];
+  default?: unknown;
+  /** A nullable choice is `anyOf: [{ enum }, { type: "null" }]`. */
+  anyOf?: Array<{ enum?: string[] }>;
+}
+
 interface GeneratedSchema {
-  properties: Record<string, { enum?: string[]; default?: unknown }>;
+  properties: Record<string, PropertySchema>;
   "x-tts-speakers": Record<string, string[]>;
   "x-timezones": string[];
 }
@@ -34,7 +41,8 @@ function schema(): GeneratedSchema {
 
 /** The allowed values for a field, in storage (snake_case) naming. */
 export function options(field: string): string[] {
-  return schema().properties[field]?.enum ?? [];
+  const property = schema().properties[field];
+  return property?.enum ?? property?.anyOf?.find((branch) => branch.enum)?.enum ?? [];
 }
 
 export function defaultFor(field: string): string {

@@ -54,6 +54,17 @@ export const tools = pgTable(
     headers: jsonb("headers").notNull().default({}),
     authType: toolAuthType("auth_type").notNull().default("none"),
 
+    /** Which header an `authType = "header"` secret is sent in, e.g. X-API-Key. */
+    authHeader: text("auth_header"),
+
+    /**
+     * The bearer token, API key or HMAC secret, encrypted with
+     * `SECRETS_KEY`. Never returned by the dashboard API once saved; only
+     * the worker receives it decrypted, over the internal API, at the start of
+     * a call. A database dump without the key reveals nothing usable.
+     */
+    authSecretCiphertext: text("auth_secret_ciphertext"),
+
     /**
      * A caller hears silence while a tool runs, so the ceiling is low by the
      * standards of a normal HTTP client. Anything slower than this needs the
