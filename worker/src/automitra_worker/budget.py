@@ -265,6 +265,15 @@ HEAD_START_SECONDS = 30.0
 # silence mid-reply is worse than a reply that ends early.
 MAX_PAUSE_SECONDS = 3.0
 
+# How far over the ceiling the first sentence of a reply, and the model request
+# behind it, may go. Held to the ceiling alone, an ordinary call runs out of
+# allowance within a few turns and the agent answers the caller with silence,
+# which reads as a dropped call. With this, a reply over the rate is cut to one
+# sentence instead; everything after that sentence is still held to the
+# ceiling. It is still a hard limit, so a caller who keeps interrupting cannot
+# run the cost up without bound.
+OPENING_OVERDRAFT_INR_PER_MIN = 0.5
+
 # Held back for the next model request, which is billed whether or not any of
 # its reply is spoken. Grown to the largest request seen as the context grows.
 MIN_LLM_MARGIN_PROMPT_TOKENS = 3000
@@ -292,8 +301,10 @@ class RateCeiling:
 
     The guarantee: at every moment of the call, what has been spent is no more
     than ``ceiling`` times the minutes elapsed (counting at least
-    :data:`HEAD_START_SECONDS`). Because it holds at every moment, it holds at
-    whatever moment the caller hangs up.
+    :data:`HEAD_START_SECONDS`), except that the first sentence of each reply
+    may take it up to ``ceiling + overdraft`` so that no turn goes unanswered.
+    Because it holds at every moment, it holds at whatever moment the caller
+    hangs up.
 
     Speech-to-text runs on the whole call and cannot be throttled, so it is
     charged against the ceiling first, leaving ``ceiling - STT`` per minute for
@@ -318,6 +329,7 @@ class RateCeiling:
     # allowance used. Apart, so it does not flap on every turn.
     tighten_at: float = 0.80
     relax_at: float = 0.60
+    overdraft_inr_per_min: float = OPENING_OVERDRAFT_INR_PER_MIN
 
     tightened: bool = field(default=False, init=False)
     # Characters sent to be synthesised, counted as they are sent.
@@ -404,11 +416,14 @@ class RateCeiling:
 
     # --- the ceiling ------------------------------------------------------
 
-    def _net_rate_per_second(self) -> float:
+    def _net_rate_per_second(self, overdraft: bool = False) -> float:
         """How fast the allowance for everything but STT grows."""
-        return (self.ceiling_inr_per_min - self.stt_inr_per_min) / 60.0
+        ceiling = self.ceiling_inr_per_min
+        if overdraft:
+            ceiling += self.overdraft_inr_per_min
+        return (ceiling - self.stt_inr_per_min) / 60.0
 
-    def _allowance_inr(self, elapsed_seconds: float) -> float:
+    def _allowance_inr(self, elapsed_seconds: float, overdraft: bool = False) -> float:
         """What may be spent, other than on STT, now and at every later moment.
 
         During the head start the allowance is flat while STT keeps accruing,
@@ -419,7 +434,7 @@ class RateCeiling:
         # STT beyond wall clock would be odd, but it costs what it costs.
         overrun = max(0.0, self._stt_seconds - max(elapsed_seconds, 0.0))
         return (
-            self._net_rate_per_second() * seconds
+            self._net_rate_per_second(overdraft) * seconds
             - self.stt_inr_per_min * overrun / 60.0
         )
 
@@ -428,19 +443,20 @@ class RateCeiling:
         tts_chars = max(self._tts_chars, self._measured_tts_chars) + self._reserved_chars
         return self.tts_inr_per_char * tts_chars + self._llm_inr
 
-    def wait_for(self, chars: int, elapsed_seconds: float) -> float:
+    def wait_for(self, chars: int, elapsed_seconds: float, overdraft: bool = False) -> float:
         """Seconds until ``chars`` more speech, and the next request, fit.
 
-        Zero when they fit now.
+        Zero when they fit now. ``overdraft`` measures against the ceiling
+        plus the overdraft, for the opening sentence of a reply.
         """
         needed = (
             self._committed_inr()
             + self.tts_inr_per_char * chars
             + self.llm_margin_inr
         )
-        if needed <= self._allowance_inr(elapsed_seconds):
+        if needed <= self._allowance_inr(elapsed_seconds, overdraft):
             return 0.0
-        rate = self._net_rate_per_second()
+        rate = self._net_rate_per_second(overdraft)
         if rate <= 0:
             return float("inf")
         return max(0.0, needed / rate - elapsed_seconds)
@@ -492,6 +508,10 @@ class SentenceGate:
 
     A sentence that does not fit yet is held for up to :data:`MAX_PAUSE_SECONDS`
     while the allowance grows; one that still does not fit ends the reply.
+
+    The request and the reply's first sentence are measured against the
+    ceiling plus its overdraft, so an agent over the rate answers briefly
+    rather than not at all.
     """
 
     def __init__(
@@ -536,7 +556,7 @@ class SentenceGate:
             self.dropped_chars += len(sentence)
             return False
         chars = len(sentence)
-        if not await self._fits(chars):
+        if not await self._fits(chars, overdraft=self.released_chars == 0):
             self.stopped = True
             self.dropped_chars += chars
             return False
@@ -546,12 +566,12 @@ class SentenceGate:
 
     async def may_request(self) -> bool:
         """Whether a model request fits, pausing briefly if need be."""
-        return await self._fits(0)
+        return await self._fits(0, overdraft=True)
 
-    async def _fits(self, chars: int) -> bool:
-        wait = self._ceiling.wait_for(chars, self._elapsed())
+    async def _fits(self, chars: int, overdraft: bool) -> bool:
+        wait = self._ceiling.wait_for(chars, self._elapsed(), overdraft)
         if 0 < wait <= self._max_pause:
             # A little over, so float rounding cannot leave it a hair short.
             await self._sleep(wait + 0.05)
-            wait = self._ceiling.wait_for(chars, self._elapsed())
+            wait = self._ceiling.wait_for(chars, self._elapsed(), overdraft)
         return wait <= 0

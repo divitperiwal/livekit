@@ -399,7 +399,7 @@ immediately with the list of valid values rather than surfacing mid-call.
 | `TTS_SPEAKER` | `ritu` | Voice; the roster is per-model (see below) |
 | `TTS_PACE` | `1.0` | Speaking rate; below 1 slower, above 1 faster |
 | `CALL_BUDGET_INR` | `0` | Hard ceiling per call in INR; `0` disables |
-| `MAX_INR_PER_MIN` | `2` | Ceiling on cost per minute, at most ₹2 and never off; speech over it is not synthesised |
+| `MAX_INR_PER_MIN` | `2` | Ceiling on cost per minute, at most ₹2 and never off; speech over it is not synthesised, except each reply's first sentence (up to ₹0.50/min more) |
 | `CALL_BUDGET_WARN_AT` | `0.70` | Fraction of budget at which the agent is told to be brief |
 | `CALL_BUDGET_WRAP_AT` | `0.90` | Fraction at which the agent says goodbye and hangs up |
 | `CALL_BUDGET_FAREWELL` | a polite close | What the agent says when the budget ends the call |
@@ -551,10 +551,11 @@ under it, and it cannot be switched off: the default and the maximum are both
 **₹2/min**, an agent may ask for less (down to ₹1), and `0` means the ₹2 default.
 
 The guarantee is that at every moment of a call, what has been spent is at most
-₹2 × the minutes elapsed. The count never uses less than 30 seconds, so the
-greeting is affordable, and 30 seconds is also the shortest billed call. Because
-the limit holds at every moment, it holds whenever the caller hangs up. It is
-enforced in two layers:
+₹2 × the minutes elapsed, except that the first sentence of each reply may take
+it up to ₹2.50 × the minutes elapsed. The count never uses less than 30 seconds, so
+the greeting is affordable, and 30 seconds is also the shortest billed call.
+Because the limit holds at every moment, it holds whenever the caller hangs up.
+It is enforced in two layers:
 
 - **Steering.** At 80% of the allowance the agent is told to answer in one
   short sentence. At 60% the instruction is taken off again.
@@ -565,6 +566,12 @@ enforced in two layers:
   never billed, and it does not appear in the transcript. A model request is
   billed even if nothing it writes is spoken, so room for the next request is
   always held back. A request that cannot fit is not made at all.
+- **The overdraft.** The model request and the first sentence of each reply
+  are measured against ₹0.50/min more than the ceiling. Held to the ceiling
+  alone, an ordinary Hindi call runs out of allowance within a few turns and
+  the agent meets the caller with silence; with it, a reply over the rate is
+  cut to one sentence instead. It is still a hard limit, so a caller who keeps
+  interrupting cannot run the cost up without bound.
 
 Speech-to-text is a **fixed ₹0.50/min** floor, billed on call duration however
 little the agent says, so it is counted first. That leaves ₹1.50/min for the

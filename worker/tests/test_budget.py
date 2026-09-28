@@ -15,6 +15,7 @@ import pytest
 
 from automitra_worker.budget import (
     HEAD_START_SECONDS,
+    OPENING_OVERDRAFT_INR_PER_MIN,
     PLATFORM_MAX_INR_PER_MIN,
     CallBudget,
     RateCeiling,
@@ -280,11 +281,28 @@ async def test_gate_pauses_briefly_for_the_allowance_to_catch_up() -> None:
     clock = Clock()
     c = ceiling()
     gate = SentenceGate(c, clock, sleep=clock.sleep)
-    # Fill the allowance up to 60s, then ask for a little more at 60s.
+    # Fill the allowance up to 60s, then ask for a little more at 60s. The
+    # opening sentence may overdraw, so it is the second one that waits.
     c.count_tts(int((1.5 - c.llm_margin_inr) / 0.003) - 10)
     clock.now = 60.0
-    assert await gate.admit("x" * 30)
+    assert await gate.admit("x" * 5)
+    assert clock.now == 60.0
+    assert await gate.admit("x" * 20)
     assert 0 < clock.now - 60.0 <= 3.1
+
+
+async def test_the_opening_sentence_may_overdraw_but_the_rest_may_not() -> None:
+    clock = Clock()
+    c = ceiling()
+    gate = SentenceGate(c, clock, sleep=clock.sleep)
+    # The plain allowance at 60s is used up entirely.
+    c.count_tts(int((1.5 - c.llm_margin_inr) / 0.003))
+    clock.now = 60.0
+    assert await gate.may_request()
+    assert await gate.admit("ठीक है, समझ गई। ")
+    # Past the pause, the second sentence is dropped rather than overdrawn.
+    assert not await gate.admit("x" * 200)
+    assert gate.stopped
 
 
 async def test_gate_ends_the_reply_rather_than_pausing_long() -> None:
@@ -314,6 +332,7 @@ async def test_cost_per_minute_never_exceeds_the_ceiling(
 ) -> None:
     """The guarantee itself, on a simulated call with an agent that will not
     stop talking: whenever the caller hangs up, cost per minute is in bounds.
+    The bound is the ceiling plus the overdraft opening sentences may use.
 
     Each turn the caller speaks for three seconds, the model is asked (and
     billed for a context that grows every turn), and the reply is offered to
@@ -335,7 +354,8 @@ async def test_cost_per_minute_never_exceeds_the_ceiling(
         )
 
     def check() -> None:
-        allowed = ceiling_inr * max(clock.now, HEAD_START_SECONDS) / 60
+        bound = ceiling_inr + OPENING_OVERDRAFT_INR_PER_MIN
+        allowed = bound * max(clock.now, HEAD_START_SECONDS) / 60
         assert spent() <= allowed + 1e-9, (
             f"Rs {spent():.4f} spent by {clock.now:.1f}s; "
             f"only Rs {allowed:.4f} allowed"
@@ -376,3 +396,51 @@ async def test_cost_per_minute_never_exceeds_the_ceiling(
 
     assert clock.now > 180  # a long call, not a trivially short one
     assert tts_total > 0  # and the agent did get to speak
+
+
+async def test_an_ordinary_conversation_is_never_met_with_silence() -> None:
+    """Every turn of a normal call gets at least its first sentence spoken.
+
+    Shaped on real calls with the KBS script: a greeting, then the caller
+    speaks for three seconds, the model answers in a second with two short
+    Hindi sentences, over a context that starts near 1,900 tokens and grows
+    each turn. At list prices this runs a little over Rs 2/min, so the plain
+    ceiling binds within a few turns; what it must not do is go quiet.
+    """
+    clock = Clock()
+    c = ceiling()
+    tts_total = 100  # the greeting
+    c.count_tts(tts_total)
+    clock.now = 100 / 15.0
+    prompt_total = completion_total = 0
+    reply = "ठीक है, समझ गई। जी, आपका नाम क्या है? "
+
+    for turn in range(40):
+        clock.now += 3.0 + 1.0  # the caller speaks; the model starts
+
+        c.begin_reply()
+        gate = SentenceGate(c, clock, sleep=clock.sleep)
+        assert await gate.may_request(), f"turn {turn} skipped at {clock.now:.0f}s"
+        prompt = 1900 + 80 * turn
+        prompt_total += prompt
+        completion_total += 25
+        c.observe_request(prompt, 0, 25)
+        c.observe(
+            FakeSummary(
+                stt_audio_duration=clock.now,
+                llm_prompt_tokens=prompt_total,
+                llm_completion_tokens=completion_total,
+            )
+        )
+
+        spoken = 0
+        for piece in gate.split(reply) + gate.rest():
+            if not await gate.admit(piece):
+                continue
+            spoken += 1
+            c.count_tts(len(piece))
+            tts_total += len(piece)
+            clock.now += len(piece) / 15.0
+        assert spoken >= 1, f"turn {turn} was silent at {clock.now:.0f}s"
+
+    assert clock.now > 180  # three minutes and more of conversation
