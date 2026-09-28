@@ -84,3 +84,20 @@ def test_unknown_persona_suggests_the_alternatives() -> None:
     message = str(exc.value)
     assert "assistant" in message
     assert "AGENT_INSTRUCTIONS" in message
+
+
+def test_kbs_closing_lines_cover_every_hour() -> None:
+    # The prompt tells the model the closing line is spoken for it. An hour
+    # with no line would end that call on a generic goodbye instead.
+    from automitra_worker.call_control import closing_line_for
+
+    lines = get_persona("kbs").closing_lines
+    assert all(closing_line_for(lines, hour) is not None for hour in range(24))
+
+
+def test_kbs_prompt_leaves_the_closing_to_the_worker() -> None:
+    # Two sources of closing lines would say goodbye twice, or disagree.
+    prompt = get_persona("kbs").prompt
+    assert "end_call" in prompt
+    assert "दस से पंद्रह" not in prompt
+    assert any("दस से पंद्रह" in line.text for line in get_persona("kbs").closing_lines)

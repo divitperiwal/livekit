@@ -12,8 +12,11 @@ that rule.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from .agent_config_model import ClosingLine
 
 # Personas belonging to a specific business are kept as data files rather than
 # source. They are operational content owned by that business, they change on
@@ -64,6 +67,10 @@ class Persona:
     # its audio reused, rather than an instruction the model follows.
     verbatim_greeting: bool = False
 
+    # Spoken by the worker as the call ends, chosen by the hour. A prompt that
+    # relies on them -- "the closing line is spoken for you" -- needs them.
+    closing_lines: tuple[ClosingLine, ...] = ()
+
     def instructions(self) -> str:
         """The full system prompt: shared voice rules, then this character."""
         if self.standalone:
@@ -77,6 +84,10 @@ class Persona:
 PROMPT_KBS = _seed("kbs.prompt.txt")
 
 GREETING_KBS = _seed("kbs.greeting.txt")
+
+CLOSING_KBS = tuple(
+    ClosingLine.model_validate(line) for line in json.loads(_seed("kbs.closing.json"))
+)
 
 
 PERSONAS: dict[str, Persona] = {
@@ -94,6 +105,7 @@ PERSONAS: dict[str, Persona] = {
         prompt=PROMPT_KBS,
         greeting=GREETING_KBS,
         verbatim_greeting=True,
+        closing_lines=CLOSING_KBS,
     ),
     "assistant": Persona(
         name="assistant",

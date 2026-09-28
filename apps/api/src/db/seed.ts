@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 
 import { DEFAULT_AGENT_CONFIG } from "./agent-config";
 import { createClient } from "./client";
@@ -33,6 +33,15 @@ const WORKER_SEED_DIR = join(
   import.meta.dir,
   "../../../../worker/src/automitra_worker/seed_personas",
 );
+
+/** JSON with object keys sorted: jsonb does not keep the order they were written in. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+      : v,
+  );
+}
 
 function workerSeed(name: string): string {
   return readFileSync(join(WORKER_SEED_DIR, name), "utf8").replace(/\n+$/, "");
@@ -171,13 +180,36 @@ try {
   }
 
   // --- the agent ------------------------------------------------------------
+  // The script the seed publishes, read from the worker's seed files so there
+  // is one copy of it.
+  //
+  // The greeting is the exact words, spoken with no model request and its
+  // audio reused: as an instruction it was a cold request of the whole prompt,
+  // and the longest silence of the call. The closing lines are spoken by the
+  // worker, chosen by the hour; the prompt relies on them and carries none.
+  //
+  // The config goes through the same validation a customer's save does. A seed
+  // that bypassed it could plant a configuration the worker would reject at
+  // call time.
+  const script = {
+    // The script sets its own language, brevity and identity rules, so the
+    // shared voice rules must not be prepended: they open with "You are a
+    // voice assistant", which this agent is explicitly forbidden from implying.
+    promptMode: "verbatim" as const,
+    instructions: workerSeed("kbs.prompt.txt"),
+    greeting: workerSeed("kbs.greeting.txt"),
+    config: validateAgentConfig({
+      ...DEFAULT_AGENT_CONFIG,
+      greetingMode: "verbatim",
+      closingLines: JSON.parse(workerSeed("kbs.closing.json")),
+    }),
+  };
+
   const existingAgent = await db.query.agents.findFirst({
     where: eq(agents.slug, "simran"),
   });
 
-  if (existingAgent) {
-    console.log("agent simran (existing)");
-  } else {
+  if (!existingAgent) {
     const agent = (
       await db
         .insert(agents)
@@ -189,43 +221,53 @@ try {
         })
         .returning()
     )[0]!;
-
-    const version = (
-      await db
-        .insert(agentVersions)
-        .values({
-          agentId: agent.id,
-          orgId: org.id,
-          version: 1,
-          // The script sets its own language, brevity and identity rules, so
-          // the shared voice rules must not be prepended: they open with "You
-          // are a voice assistant", which this agent is explicitly forbidden
-          // from implying.
-          promptMode: "verbatim",
-          instructions: workerSeed("kbs.prompt.txt"),
-          greeting: workerSeed("kbs.greeting.txt"),
-          // Through the same validation a customer's save goes through. A
-          // seed that bypassed it could plant a configuration the worker
-          // would reject at call time.
-          //
-          // The greeting is the exact words, spoken with no model request and
-          // its audio reused: as an instruction it was a cold request of the
-          // whole prompt, and the longest silence of the call.
-          config: validateAgentConfig({ ...DEFAULT_AGENT_CONFIG, greetingMode: "verbatim" }),
-          publishedAt: new Date(),
-        })
-        .returning()
-    )[0]!;
-
-    await db
-      .update(agents)
-      .set({ liveVersionId: version.id, draftVersionId: version.id })
-      .where(eq(agents.id, agent.id));
-
+    const version = await publishScript(agent.id, 1);
     console.log(
       `agent simran (created) v${version.version}, ` +
         `${version.instructions.length} chars of prompt`,
     );
+  } else {
+    // A database seeded before the script changed would otherwise keep
+    // running the old one. Versions are never edited, so publishing a new
+    // one loses nothing: the previous version stays, and can be restored.
+    const live = existingAgent.liveVersionId
+      ? await db.query.agentVersions.findFirst({
+          where: eq(agentVersions.id, existingAgent.liveVersionId),
+        })
+      : undefined;
+    const current =
+      live !== undefined &&
+      live.promptMode === script.promptMode &&
+      live.instructions === script.instructions &&
+      live.greeting === script.greeting &&
+      canonical(live.config) === canonical(script.config);
+    if (current) {
+      console.log("agent simran (existing, script current)");
+    } else {
+      const latest = await db.query.agentVersions.findFirst({
+        where: eq(agentVersions.agentId, existingAgent.id),
+        orderBy: desc(agentVersions.version),
+      });
+      const version = await publishScript(existingAgent.id, (latest?.version ?? 0) + 1);
+      console.log(
+        `agent simran (existing) published v${version.version}, ` +
+          `${version.instructions.length} chars of prompt`,
+      );
+    }
+  }
+
+  async function publishScript(agentId: string, number: number) {
+    const version = (
+      await db
+        .insert(agentVersions)
+        .values({ agentId, orgId: org.id, version: number, ...script, publishedAt: new Date() })
+        .returning()
+    )[0]!;
+    await db
+      .update(agents)
+      .set({ liveVersionId: version.id, draftVersionId: version.id })
+      .where(eq(agents.id, agentId));
+    return version;
   }
 
   console.log("seed complete");

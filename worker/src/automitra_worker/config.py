@@ -347,6 +347,8 @@ class AgentConfig:
         else:
             prompt = persona.prompt
             prompt_mode = "verbatim" if persona.standalone else "prepend_base_rules"
+            if persona.closing_lines:
+                raw["closing_lines"] = [line.model_dump() for line in persona.closing_lines]
         raw["prompt_mode"] = prompt_mode
 
         # A greeting from the variable is read as an instruction, as it always

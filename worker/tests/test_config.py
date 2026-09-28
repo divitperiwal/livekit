@@ -293,6 +293,17 @@ def test_a_persona_with_exact_words_greets_verbatim(monkeypatch: pytest.MonkeyPa
     assert config.greeting.startswith("नमस्कार")
 
 
+def test_the_kbs_persona_brings_its_closing_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PERSONA", "kbs")
+    assert len(AgentConfig.from_env().closing_lines) == 3
+
+
+def test_a_custom_prompt_does_not_inherit_closing_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_PERSONA", "kbs")
+    monkeypatch.setenv("AGENT_INSTRUCTIONS", "You sell cars.")
+    assert AgentConfig.from_env().closing_lines == ()
+
+
 def test_a_greeting_from_the_environment_stays_an_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_PERSONA", "kbs")
     monkeypatch.setenv("AGENT_GREETING", "Greet the caller.")
