@@ -246,7 +246,7 @@ sympathy, no restating what the user said."""
 # The most any call may cost per minute, in INR, whatever an agent is
 # configured with. A configured ceiling of 0 means this one; a higher one is
 # lowered to it.
-PLATFORM_MAX_INR_PER_MIN = 2.0
+PLATFORM_MAX_INR_PER_MIN = 2.5
 
 # The lowest ceiling an agent may ask for. Speech-to-text alone is a fixed
 # Rs 0.50/min; at Rs 1/min what is left buys the agent about 160 characters of
@@ -332,6 +332,10 @@ class RateCeiling:
     overdraft_inr_per_min: float = OPENING_OVERDRAFT_INR_PER_MIN
 
     tightened: bool = field(default=False, init=False)
+    # What the ceiling has cost the caller so far, for the live stats: model
+    # requests not made, and characters of replies never spoken.
+    skipped_requests: int = field(default=0, init=False)
+    held_back_chars: int = field(default=0, init=False)
     # Characters sent to be synthesised, counted as they are sent.
     _tts_chars: float = field(default=0.0, init=False)
     # Admitted by the gate but not yet seen on the way into synthesis.

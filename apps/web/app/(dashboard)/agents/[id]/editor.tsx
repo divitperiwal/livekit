@@ -371,7 +371,7 @@ export function AgentEditor({
               step="0.05"
               min="0.6"
               max="2"
-              defaultValue={String(config.maxInrPerMin || 2)}
+              defaultValue={String(config.maxInrPerMin || 2.5)}
               className={inputClass}
             />
           </Field>

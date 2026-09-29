@@ -33,6 +33,14 @@ NOTHING_FOUND = (
     "to have someone confirm it for them. Do not guess."
 )
 
+# A call with no query searched nothing, so it must not read as "nothing
+# found": the model would tell the caller the answer does not exist. Models do
+# sometimes emit the call with empty arguments; asking again recovers it.
+EMPTY_QUERY = (
+    "No search was made because the query was empty. Call search_knowledge "
+    "again with the query set to what you are looking up."
+)
+
 
 def format_passages(passages: list[str]) -> str:
     """Passages the model can quote from, fenced off as reference, not orders.
@@ -53,7 +61,7 @@ def knowledge_tool(search: Callable[[str], Awaitable[list[str]]]) -> RawFunction
     async def search_knowledge(raw_arguments: dict[str, object], context: RunContext) -> str:
         query = str(raw_arguments.get("query") or "").strip()
         if not query:
-            return NOTHING_FOUND
+            return EMPTY_QUERY
         try:
             passages = await search(query)
         except Exception as exc:

@@ -229,12 +229,12 @@
           "type": "integer"
         },
         {
-          "maximum": 2.0,
+          "maximum": 2.5,
           "minimum": 1.0,
           "type": "number"
         }
       ],
-      "default": 2.0,
+      "default": 2.5,
       "title": "Max Inr Per Min"
     },
     "budget_warn_at": {

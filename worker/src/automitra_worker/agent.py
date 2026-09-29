@@ -9,6 +9,7 @@ transport, the VAD and the semantic turn detector, which are model-agnostic.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -41,6 +42,7 @@ from livekit.plugins import sarvam, silero
 
 from . import transcript
 from .analysis import Analysis, analyse, transcript_text
+from .audio_input import room_options as caller_audio_options
 from .budget import (
     RATE_INSTRUCTIONS,
     WARN_INSTRUCTIONS,
@@ -67,6 +69,8 @@ from .evals import execute_run
 from .greeting import plan_opening, speak_opening
 from .knowledge import knowledge_tool
 from .latency import LatencyTracker
+from .live_stats import TOPIC as STATS_TOPIC
+from .live_stats import LiveStats
 from .costs import actual_cost
 from .realtime_stt import RealtimeSTT, find_realtime_stt
 from .resolve import (
@@ -94,6 +98,9 @@ SILENCE_GOODBYE_INSTRUCTIONS = (
 )
 # How long after the last key press the digits entered so far are passed on.
 KEYPAD_SETTLE_SECONDS = 1.5
+
+# How often the live stats reach a browser watching the call.
+STATS_INTERVAL_SECONDS = 1.0
 
 # Each job's post-call step, by job id, for the server's on_session_end hook
 # to find. A module-level table is safe because every job runs in a process of
@@ -165,6 +172,7 @@ class VoiceAssistant(Agent):
             # A request is billed whether or not its reply is spoken, so one
             # the ceiling cannot afford is not made at all.
             logger.warning("rate ceiling: no room for a model request; skipping this turn")
+            self._ceiling.skipped_requests += 1
             await stream.aclose()
             return
 
@@ -190,6 +198,7 @@ class VoiceAssistant(Agent):
                 yield sentence
 
         if gate.dropped_chars:
+            self._ceiling.held_back_chars += gate.dropped_chars
             logger.info(
                 "rate ceiling: held back %d of %d characters of a reply",
                 gate.dropped_chars,
@@ -564,6 +573,14 @@ async def _run_call(
 
     # How long the caller waited for each reply.
     latency = LatencyTracker()
+    # The same figures and more, live, for a developer watching a test call.
+    stats = LiveStats(
+        stt_model=config.stt_model,
+        llm_model=config.llm_model,
+        tts_model=config.tts_model,
+        tts_speaker=config.tts_speaker,
+        stt_language=config.stt_language,
+    )
 
     # Set once the greeting is queued. Before that, silence is ringing or the
     # answering-machine check, not a caller who has gone quiet.
@@ -606,15 +623,32 @@ async def _run_call(
         several times over in progressively more complete forms.
         """
         record(transcript.conversation_item(ev.item))
+        if getattr(ev.item, "role", None) == "assistant" and getattr(ev.item, "interrupted", False):
+            stats.interruptions += 1
 
     @session.on("function_tools_executed")
     def _on_tools(ev: Any) -> None:
         suppress_end_call_reply(ev)
-        for row in transcript.tool_events(
-            list(getattr(ev, "function_calls", []) or []),
-            list(getattr(ev, "function_call_outputs", []) or []),
-        ):
+        calls = list(getattr(ev, "function_calls", []) or [])
+        outputs = list(getattr(ev, "function_call_outputs", []) or [])
+        for row in transcript.tool_events(calls, outputs):
             record(row)
+        for call, output in zip(calls, outputs + [None] * (len(calls) - len(outputs))):
+            stats.on_tool(
+                str(getattr(call, "name", "")),
+                str(getattr(call, "arguments", "")),
+                str(getattr(output, "output", "") if output is not None else ""),
+                elapsed(),
+            )
+
+    @session.on("user_input_transcribed")
+    def _on_heard(ev: Any) -> None:
+        if getattr(ev, "is_final", False) and getattr(ev, "transcript", ""):
+            stats.on_transcript(ev.transcript, getattr(ev, "language", None), elapsed())
+
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev: Any) -> None:
+        stats.agent_state = str(ev.new_state)
 
     async def hang_up() -> None:
         # Deleting the room disconnects everyone in it, including a phone
@@ -643,6 +677,7 @@ async def _run_call(
         for nothing, and a caller who put the phone down without hanging up is
         common on mobiles.
         """
+        stats.user_state = str(ev.new_state)
         if ev.new_state == "speaking":
             silence["checks"] = 0
             return
@@ -692,6 +727,7 @@ async def _run_call(
         metrics.log_metrics(ev.metrics)
         usage.collect(ev.metrics)
         latency.collect(ev.metrics)
+        stats.on_metrics(ev.metrics, elapsed())
 
         if closing.is_set():
             return
@@ -936,7 +972,32 @@ async def _run_call(
         voice = (config.tts_model, config.tts_speaker, config.tts_language, config.tts_pace)
         speak_opening(session, opening, voice)
 
-    await session.start(agent=assistant, room=ctx.room)
+    await session.start(agent=assistant, room=ctx.room, room_options=caller_audio_options())
+
+    async def publish_stats() -> None:
+        """Send the live stats to anyone in the room on a browser, once a second.
+
+        Only while a browser participant is present: a phone caller cannot
+        read them, so an ordinary phone call sends nothing. A failed send is
+        dropped; the next one supersedes it anyway.
+        """
+        while not timing.get("ended"):
+            await asyncio.sleep(STATS_INTERVAL_SECONDS)
+            viewers = [
+                p for p in ctx.room.remote_participants.values()
+                if p.kind != rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+            ]
+            if not viewers:
+                continue
+            try:
+                snapshot = stats.snapshot(elapsed(), usage.get_summary(), rate_ceiling)
+                await ctx.room.local_participant.publish_data(
+                    json.dumps(snapshot, ensure_ascii=False), reliable=True, topic=STATS_TOPIC
+                )
+            except Exception as exc:
+                logger.debug("live stats not sent: %s", exc)
+
+    asyncio.create_task(publish_stats())
 
     if identity is not None and identity.meta.place_call:
         # The dialer's path: this worker places the call itself, so it knows

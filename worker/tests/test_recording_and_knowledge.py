@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import pytest
 from livekit import api
 
-from automitra_worker.knowledge import NOTHING_FOUND, format_passages, knowledge_tool
+from automitra_worker.knowledge import EMPTY_QUERY, NOTHING_FOUND, format_passages, knowledge_tool
 from automitra_worker.recording import RecordingStorage, egress_request, recording_key
 
 
@@ -74,6 +74,19 @@ async def test_a_failing_search_is_not_a_failing_call() -> None:
     assert tool.info.raw_schema["name"] == "search_knowledge"
     out = await tool(raw_arguments={"query": "price"}, context=None)  # type: ignore[arg-type]
     assert out == NOTHING_FOUND
+
+
+async def test_an_empty_query_asks_again_rather_than_finding_nothing() -> None:
+    searched: list[str] = []
+
+    async def search(query: str) -> list[str]:
+        searched.append(query)
+        return []
+
+    out = await knowledge_tool(search)(raw_arguments={}, context=None)  # type: ignore[arg-type]
+    assert searched == []
+    assert out == EMPTY_QUERY
+    assert out != NOTHING_FOUND
 
 
 async def test_the_search_receives_the_query() -> None:

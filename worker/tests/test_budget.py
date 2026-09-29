@@ -195,8 +195,8 @@ class Clock:
 
 
 def test_effective_ceiling_never_exceeds_the_platform() -> None:
-    assert effective_ceiling(0.0) == PLATFORM_MAX_INR_PER_MIN == 2.0
-    assert effective_ceiling(5.0) == 2.0
+    assert effective_ceiling(0.0) == PLATFORM_MAX_INR_PER_MIN == 2.5
+    assert effective_ceiling(5.0) == 2.5
     assert effective_ceiling(1.5) == 1.5
 
 

@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "livekit-agents[silero,turn-detector]~=1.8",
+    "livekit-plugins-noise-cancellation~=0.2",
     "livekit-plugins-sarvam~=1.8",
     "pydantic>=2.11",
     "python-dotenv>=1.2.3",

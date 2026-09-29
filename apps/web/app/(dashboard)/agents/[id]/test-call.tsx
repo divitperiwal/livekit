@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, Track, type RemoteTrack } from "livekit-client";
 
 import { startTestCall } from "./actions";
+import { DevStats, STATS_TOPIC, type LiveStats } from "./dev-stats";
 
 type Phase = "idle" | "connecting" | "live" | "ended";
 
@@ -24,6 +25,7 @@ export function TestCall({ agentId }: { agentId: string }) {
   const [roomName, setRoomName] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [stats, setStats] = useState<LiveStats | null>(null);
 
   const roomRef = useRef<Room | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -53,6 +55,7 @@ export function TestCall({ agentId }: { agentId: string }) {
     setError(null);
     setPhase("connecting");
     setSeconds(0);
+    setStats(null);
 
     const result = await startTestCall(agentId);
     if ("error" in result) {
@@ -69,6 +72,17 @@ export function TestCall({ agentId }: { agentId: string }) {
       // avoids the autoplay block that a freshly created one would hit.
       if (track.kind === Track.Kind.Audio && audioRef.current) {
         track.attach(audioRef.current);
+      }
+    });
+
+    // The worker's live stats: the latest snapshot replaces the last.
+    const decoder = new TextDecoder();
+    room.on(RoomEvent.DataReceived, (payload: Uint8Array, _participant, _kind, topic?: string) => {
+      if (topic !== STATS_TOPIC) return;
+      try {
+        setStats(JSON.parse(decoder.decode(payload)) as LiveStats);
+      } catch {
+        // A malformed snapshot is skipped; the next one arrives within a second.
       }
     });
 
@@ -171,6 +185,8 @@ export function TestCall({ agentId }: { agentId: string }) {
       {roomName && phase !== "idle" ? (
         <p className="mt-2 font-mono text-xs text-neutral-400">{roomName}</p>
       ) : null}
+
+      {stats && phase !== "idle" ? <DevStats stats={stats} live={phase === "live"} /> : null}
     </div>
   );
 }

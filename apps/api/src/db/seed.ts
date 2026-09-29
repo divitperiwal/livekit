@@ -84,8 +84,8 @@ const DEFAULT_RATES = {
     },
     pstnInrPerMin: { "+91": 0.6, default: 3.0 },
   },
-  // Rs 6/min against a cost of at most about Rs 3.10/min on an Indian number:
-  // the worker holds Sarvam's share to Rs 2/min on every call, and to Rs 2.50/min
+  // Rs 6/min against a cost of at most about Rs 3.60/min on an Indian number:
+  // the worker holds Sarvam's share to Rs 2.50/min on every call, and to Rs 3/min
   // for the first sentence of each reply (see RateCeiling in the worker's
   // budget.py), and the carrier adds Rs 0.60.
   //
