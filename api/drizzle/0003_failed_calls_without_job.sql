@@ -1,0 +1,2 @@
+ALTER TABLE "calls" DROP CONSTRAINT "calls_opened_has_job";--> statement-breakpoint
+ALTER TABLE "calls" ADD CONSTRAINT "calls_opened_has_job" CHECK ("calls"."status" in ('queued', 'failed') or "calls"."lk_job_id" is not null);

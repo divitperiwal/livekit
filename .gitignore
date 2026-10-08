@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# Bun / Node
+node_modules/
+dist/
+
+# Local recordings and scratch audio
+*.ogg

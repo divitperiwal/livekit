@@ -1,0 +1,647 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "automitra worker <-> API internal contract",
+  "description": "Request and response bodies of /internal/*. See control_plane/contract.py.",
+  "$defs": {
+    "AppendEventsRequest": {
+      "properties": {
+        "orgId": {
+          "title": "Orgid",
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/CallEvent"
+          },
+          "minItems": 1,
+          "title": "Events",
+          "type": "array"
+        }
+      },
+      "required": [
+        "orgId",
+        "events"
+      ],
+      "title": "AppendEventsRequest",
+      "type": "object"
+    },
+    "AppendEventsResponse": {
+      "properties": {
+        "inserted": {
+          "title": "Inserted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "inserted"
+      ],
+      "title": "AppendEventsResponse",
+      "type": "object"
+    },
+    "CallAnalysis": {
+      "description": "Written by the model after the call, then checked: a disposition the agent does not\ndefine, or a field of the wrong type, arrives as null.",
+      "properties": {
+        "summary": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "disposition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disposition"
+        },
+        "fields": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Fields",
+          "type": "object"
+        },
+        "qa": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/QaVerdict"
+          },
+          "title": "Qa",
+          "type": "array"
+        }
+      },
+      "title": "CallAnalysis",
+      "type": "object"
+    },
+    "CallEvent": {
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "user_message",
+            "agent_message",
+            "tool_call",
+            "tool_result",
+            "stage_change",
+            "transfer",
+            "error",
+            "amd"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "enum": [
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Payload",
+          "type": "object"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "type",
+        "at"
+      ],
+      "title": "CallEvent",
+      "type": "object"
+    },
+    "ErrorResponse": {
+      "properties": {
+        "error": {
+          "title": "Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ErrorResponse",
+      "type": "object"
+    },
+    "FinalizeCallRequest": {
+      "properties": {
+        "status": {
+          "enum": [
+            "ringing",
+            "in_progress",
+            "completed",
+            "failed",
+            "no_answer",
+            "busy",
+            "voicemail"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "endReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endreason"
+        },
+        "durationSeconds": {
+          "minimum": 0,
+          "title": "Durationseconds",
+          "type": "integer"
+        },
+        "doNotCall": {
+          "default": false,
+          "title": "Donotcall",
+          "type": "boolean"
+        },
+        "recordingKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recordingkey"
+        },
+        "latency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LatencySummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "analysis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CallAnalysis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "status",
+        "durationSeconds"
+      ],
+      "title": "FinalizeCallRequest",
+      "type": "object"
+    },
+    "FinalizeCallResponse": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ringing",
+            "in_progress",
+            "completed",
+            "failed",
+            "no_answer",
+            "busy",
+            "voicemail"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "title": "FinalizeCallResponse",
+      "type": "object"
+    },
+    "LatencySummary": {
+      "description": "Seconds the caller waited per reply: end of turn + LLM first token + TTS first byte.",
+      "properties": {
+        "turns": {
+          "title": "Turns",
+          "type": "integer"
+        },
+        "p50": {
+          "title": "P50",
+          "type": "number"
+        },
+        "p95": {
+          "title": "P95",
+          "type": "number"
+        },
+        "max": {
+          "title": "Max",
+          "type": "number"
+        },
+        "eou": {
+          "title": "Eou",
+          "type": "number"
+        },
+        "llm": {
+          "title": "Llm",
+          "type": "number"
+        },
+        "tts": {
+          "title": "Tts",
+          "type": "number"
+        },
+        "dominant": {
+          "enum": [
+            "eou",
+            "llm",
+            "tts"
+          ],
+          "title": "Dominant",
+          "type": "string"
+        }
+      },
+      "required": [
+        "turns",
+        "p50",
+        "p95",
+        "max",
+        "eou",
+        "llm",
+        "tts",
+        "dominant"
+      ],
+      "title": "LatencySummary",
+      "type": "object"
+    },
+    "OpenCallRequest": {
+      "properties": {
+        "orgId": {
+          "title": "Orgid",
+          "type": "string"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "agentVersionId": {
+          "title": "Agentversionid",
+          "type": "string"
+        },
+        "lkRoomName": {
+          "title": "Lkroomname",
+          "type": "string"
+        },
+        "lkJobId": {
+          "title": "Lkjobid",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "inbound",
+            "outbound"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "fromNumber": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fromnumber"
+        },
+        "toNumber": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tonumber"
+        },
+        "phoneNumberId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phonenumberid"
+        },
+        "answered": {
+          "default": true,
+          "title": "Answered",
+          "type": "boolean"
+        },
+        "variables": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Variables",
+          "type": "object"
+        },
+        "campaignId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Campaignid"
+        },
+        "contactId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contactid"
+        },
+        "requestId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requestid"
+        }
+      },
+      "required": [
+        "orgId",
+        "agentId",
+        "agentVersionId",
+        "lkRoomName",
+        "lkJobId",
+        "direction"
+      ],
+      "title": "OpenCallRequest",
+      "type": "object"
+    },
+    "OpenCallResponse": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "orgId": {
+          "title": "Orgid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "orgId"
+      ],
+      "title": "OpenCallResponse",
+      "type": "object"
+    },
+    "QaVerdict": {
+      "properties": {
+        "criterion": {
+          "title": "Criterion",
+          "type": "string"
+        },
+        "passed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Passed"
+        }
+      },
+      "required": [
+        "criterion",
+        "passed"
+      ],
+      "title": "QaVerdict",
+      "type": "object"
+    },
+    "ResolveResponse": {
+      "description": "Query: `agentVersionId` (pinned), or `agentId` (live version after any experiment\nsplit), or `number` (the dialled number's assigned agent); plus `orgId` when the job\ncarried one. `orgId` is a claim the API checks, never a filter: a mismatch is 403.\n402 means the account or org has no credit.",
+      "properties": {
+        "orgId": {
+          "title": "Orgid",
+          "type": "string"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "agentVersionId": {
+          "title": "Agentversionid",
+          "type": "string"
+        },
+        "agentSlug": {
+          "title": "Agentslug",
+          "type": "string"
+        },
+        "promptMode": {
+          "enum": [
+            "prepend_base_rules",
+            "verbatim"
+          ],
+          "title": "Promptmode",
+          "type": "string"
+        },
+        "instructions": {
+          "minLength": 1,
+          "title": "Instructions",
+          "type": "string"
+        },
+        "greeting": {
+          "minLength": 1,
+          "title": "Greeting",
+          "type": "string"
+        },
+        "config": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Config",
+          "type": "object"
+        },
+        "recordCalls": {
+          "default": false,
+          "title": "Recordcalls",
+          "type": "boolean"
+        },
+        "availableInr": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availableinr"
+        },
+        "tools": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "knowledgeBaseCount": {
+          "default": 0,
+          "title": "Knowledgebasecount",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "orgId",
+        "agentId",
+        "agentVersionId",
+        "agentSlug",
+        "promptMode",
+        "instructions",
+        "greeting"
+      ],
+      "title": "ResolveResponse",
+      "type": "object"
+    },
+    "UsageReport": {
+      "description": "Raw usage; the API prices it with the account's rate card.",
+      "properties": {
+        "sttSeconds": {
+          "title": "Sttseconds",
+          "type": "number"
+        },
+        "ttsCharacters": {
+          "title": "Ttscharacters",
+          "type": "integer"
+        },
+        "llmPromptTokens": {
+          "title": "Llmprompttokens",
+          "type": "integer"
+        },
+        "llmCachedTokens": {
+          "title": "Llmcachedtokens",
+          "type": "integer"
+        },
+        "llmCompletionTokens": {
+          "title": "Llmcompletiontokens",
+          "type": "integer"
+        },
+        "sttModel": {
+          "title": "Sttmodel",
+          "type": "string"
+        },
+        "ttsModel": {
+          "title": "Ttsmodel",
+          "type": "string"
+        },
+        "llmModel": {
+          "title": "Llmmodel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sttSeconds",
+        "ttsCharacters",
+        "llmPromptTokens",
+        "llmCachedTokens",
+        "llmCompletionTokens",
+        "sttModel",
+        "ttsModel",
+        "llmModel"
+      ],
+      "title": "UsageReport",
+      "type": "object"
+    }
+  }
+}
