@@ -1,0 +1,2 @@
+# Run by bash inside Linux or Git Bash: a CRLF checkout breaks them.
+*.sh text eol=lf

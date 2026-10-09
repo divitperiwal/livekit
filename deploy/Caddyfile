@@ -1,0 +1,15 @@
+{$API_DOMAIN} {
+	request_body {
+		max_size 1MB
+	}
+
+	handle /v1/* {
+		reverse_proxy api:3000
+	}
+
+	# /internal and anything else stay on the Docker network.
+	handle {
+		header Content-Type application/json
+		respond `{"error":"not found"}` 404
+	}
+}
