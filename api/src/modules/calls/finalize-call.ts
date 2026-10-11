@@ -264,11 +264,14 @@ async function recordUsage(
     orgId: org.id,
     type: "usage.recorded",
     key: record.id,
+    // The account prices the call with its own plan from billableSeconds and direction.
     payload: {
       orgId: org.externalId,
       callId: call.id,
       usageRecordId: record.id,
       priceInr: Number(record.priceInr),
+      billableSeconds: record.billableSeconds,
+      direction: call.direction,
     },
   });
 

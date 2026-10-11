@@ -144,6 +144,8 @@ describe("POST /internal/calls/:id/finalize", () => {
       callId: body.id,
       usageRecordId: usage!.id,
       priceInr: 6,
+      billableSeconds: 60,
+      direction: "inbound",
     });
   });
 
