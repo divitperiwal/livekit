@@ -63,26 +63,27 @@ async def setup() -> None:
 
     username = settings.auth_username or "<not set>"
     print("\nNow configure Plivo (console.plivo.com > Zentrunk):")
-    print("  1. An OUTBOUND trunk (Plivo -> LiveKit), so your numbers reach the agent:")
+    print("  1. An INBOUND trunk (Plivo -> LiveKit), so calls to our numbers reach the agent:")
     print(f"       Primary SIP URI:  {livekit_sip_host(os.getenv('LIVEKIT_URL', ''))}")
+    print("     Its trunk id is the api's PLIVO_INBOUND_TRUNK_ID: every rented number is")
+    print("     pointed at it. Point numbers bought by hand at it in the console.")
+    print("  2. An OUTBOUND trunk (LiveKit -> Plivo), for outbound calls:")
     print(f"       Credentials:      username {username} with PLIVO_SIP_PASSWORD")
-    print("  2. Point each number at that trunk:")
-    for number in settings.numbers:
-        print(f"       {number}")
-    print("  3. An INBOUND trunk (LiveKit -> Plivo) with the same credentials, for outbound calls.")
     print(f"     LiveKit sends to {settings.outbound_address}")
+    print("  3. Ask LiveKit support to enable allowed_addresses on this project if it is not:")
+    print(f"     the inbound trunk accepts only {', '.join(settings.allowed_addresses)}")
 
 
-async def call(to_number: str, from_number: str | None, agent_id: str | None) -> None:
+async def call(to_number: str, from_number: str, agent_id: str | None) -> None:
     settings = TelephonySettings.from_environment()
     settings.require_enabled()
     if not to_number.startswith("+"):
         raise TelephonyConfigError(
             f"The number to call must be E.164, like +911234567890. Got {to_number!r}."
         )
-    if from_number and from_number not in settings.numbers:
+    if not from_number.startswith("+"):
         raise TelephonyConfigError(
-            f"Caller ID {from_number} is not one of your Plivo numbers ({', '.join(settings.numbers)})."
+            f"The caller ID must be one of our Plivo numbers in E.164. Got {from_number!r}."
         )
     if not settings.agent_name:
         raise TelephonyConfigError(
@@ -94,9 +95,7 @@ async def call(to_number: str, from_number: str | None, agent_id: str | None) ->
             api.CreateAgentDispatchRequest(
                 agent_name=settings.agent_name,
                 room=room_name,
-                metadata=place_call_metadata(
-                    to_number, from_number or settings.numbers[0], agent_id
-                ),
+                metadata=place_call_metadata(to_number, from_number, agent_id),
             )
         )
     print(f"Dispatched {settings.agent_name} into {room_name} to call {to_number}.")
@@ -114,7 +113,7 @@ def main() -> None:
     call_parser = commands.add_parser("call", help="place one outbound call through the worker")
     call_parser.add_argument("to", help="number to call, E.164, e.g. +911234567890")
     call_parser.add_argument(
-        "--from", dest="from_number", help="caller ID; defaults to the first PLIVO_PHONE_NUMBERS"
+        "--from", dest="from_number", required=True, help="caller ID: one of our Plivo numbers"
     )
     call_parser.add_argument("--agent-id", help="multi-tenant mode: the agent to call as")
     arguments = parser.parse_args()

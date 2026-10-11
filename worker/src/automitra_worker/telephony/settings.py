@@ -5,6 +5,10 @@
 
 Read once per process from the environment; a deployment that never touches the phone
 network leaves it unset.
+
+Numbers are rented and released while the system runs, so neither trunk lists them: the
+inbound trunk takes calls to any number, but only from Plivo's addresses, and the API
+refuses a call to a number it does not know. Each outbound call names its own caller ID.
 """
 
 import os
@@ -27,13 +31,11 @@ class TelephonyConfigError(ValueError):
 @dataclass(frozen=True)
 class TelephonySettings:
     enabled: bool
-    # E.164. They scope the inbound trunk to our own numbers and are the outbound caller IDs.
-    numbers: tuple[str, ...]
     outbound_address: str
     # One credential pair both ways: Plivo presents it inbound, LiveKit presents it outbound.
     auth_username: str | None
     auth_password: str | None
-    # Plivo's signalling IPs. Narrows who may send INVITEs to the inbound trunk.
+    # Plivo's signalling IPs: the only senders the inbound trunk accepts.
     allowed_addresses: tuple[str, ...]
     room_prefix: str
     # Must match the name the worker registers under, or LiveKit dispatches nothing.
@@ -63,7 +65,6 @@ class TelephonySettings:
             return default if text is None else text.lower() not in FALSE_WORDS
 
         enabled = switch("TELEPHONY_ENABLED", False)
-        numbers = listed("PLIVO_PHONE_NUMBERS")
         username, password = value("PLIVO_SIP_USERNAME"), value("PLIVO_SIP_PASSWORD")
         allowed = listed("PLIVO_ALLOWED_ADDRESSES")
         agent_name = value("TELEPHONY_AGENT_NAME")
@@ -81,7 +82,7 @@ class TelephonySettings:
 
         warnings: list[str] = []
         if enabled:
-            _check_enabled_settings(numbers, username, password, allowed)
+            _check_enabled_settings(username, password, allowed)
             if not agent_name:
                 warnings.append(
                     "TELEPHONY_AGENT_NAME is unset, so inbound calls rely on automatic dispatch. "
@@ -90,7 +91,6 @@ class TelephonySettings:
 
         return cls(
             enabled=enabled,
-            numbers=numbers,
             outbound_address=outbound_address,
             auth_username=username,
             auth_password=password,
@@ -118,35 +118,24 @@ class TelephonySettings:
         if not self.enabled:
             return "telephony=off"
         return (
-            f"telephony=plivo numbers={','.join(self.numbers)} outbound={self.outbound_address} "
+            f"telephony=plivo outbound={self.outbound_address} "
             f"agent={self.agent_name or '<automatic dispatch>'} rooms={self.room_prefix}-* krisp={self.krisp_enabled}"
         )
 
 
 def _check_enabled_settings(
-    numbers: tuple[str, ...], username: str | None, password: str | None, allowed: tuple[str, ...]
+    username: str | None, password: str | None, allowed: tuple[str, ...]
 ) -> None:
-    if not numbers:
-        raise TelephonyConfigError(
-            "TELEPHONY_ENABLED is on but PLIVO_PHONE_NUMBERS is empty. List the numbers in "
-            "E.164, comma separated: PLIVO_PHONE_NUMBERS=+911234567890"
-        )
-    not_e164 = [
-        number for number in numbers if not number.startswith("+") or not number[1:].isdigit()
-    ]
-    if not_e164:
-        raise TelephonyConfigError(
-            f"PLIVO_PHONE_NUMBERS must be E.164, like +911234567890. Not: {', '.join(not_e164)}."
-        )
     if bool(username) != bool(password):
         raise TelephonyConfigError(
             "PLIVO_SIP_USERNAME and PLIVO_SIP_PASSWORD go together, or neither."
         )
-    # Anyone who finds the URI could place calls billed to us.
-    if not username and not allowed:
+    # The inbound trunk takes calls to any number, so only Plivo may send to it: anyone else
+    # who found the URI could place calls billed to us.
+    if not allowed:
         raise TelephonyConfigError(
-            "The inbound trunk would accept SIP from anyone. Set PLIVO_SIP_USERNAME and "
-            "PLIVO_SIP_PASSWORD, or restrict PLIVO_ALLOWED_ADDRESSES to Plivo's signalling IPs."
+            "PLIVO_ALLOWED_ADDRESSES is empty: the inbound trunk, which takes calls to any "
+            "number, would accept SIP from anyone. List Plivo's signalling IPs or CIDRs."
         )
 
 

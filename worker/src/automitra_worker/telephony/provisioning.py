@@ -34,7 +34,8 @@ async def ensure_inbound_trunk(
 ) -> api.SIPInboundTrunkInfo:
     trunk = api.SIPInboundTrunkInfo(
         name=settings.inbound_trunk_name,
-        numbers=list(settings.numbers),
+        # Any number: rented numbers come and go; unknown ones are refused by the API.
+        numbers=[],
         allowed_addresses=list(settings.allowed_addresses),
         krisp_enabled=settings.krisp_enabled,
     )
@@ -64,7 +65,8 @@ async def ensure_outbound_trunk(
     trunk = api.SIPOutboundTrunkInfo(
         name=settings.outbound_trunk_name,
         address=settings.outbound_address,
-        numbers=list(settings.numbers),
+        # Any caller ID: each dial names the org's own number (`sip_number`).
+        numbers=["*"],
         transport=api.SIPTransport.SIP_TRANSPORT_AUTO,
     )
     if settings.auth_username and settings.auth_password:

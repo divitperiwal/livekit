@@ -8,7 +8,7 @@ the status whether the number rings again.
 from livekit import api
 
 from automitra_worker.control_plane.contract import CallStatus
-from automitra_worker.telephony.settings import TelephonySettings
+from automitra_worker.telephony.settings import TelephonyConfigError, TelephonySettings
 
 # The number itself is wrong: retrying only reaches the same recording.
 UNREACHABLE_SIP_CODES = frozenset({404, 410, 484, 604})
@@ -73,6 +73,9 @@ def dial_request(
     from_number: str | None,
     participant_identity: str,
 ) -> api.CreateSIPParticipantRequest:
+    # The trunk allows any caller ID, so the dial must name one or LiveKit refuses it.
+    if not from_number:
+        raise TelephonyConfigError(f"no caller ID for the call to {to_number}")
     request = api.CreateSIPParticipantRequest(
         sip_trunk_id=trunk_id,
         sip_call_to=to_number,
@@ -81,9 +84,8 @@ def dial_request(
         participant_name=to_number,
         krisp_enabled=settings.krisp_enabled,
         wait_until_answered=True,
+        sip_number=from_number,
     )
-    if from_number:
-        request.sip_number = from_number
     if settings.max_call_seconds is not None:
         request.max_call_duration.FromSeconds(settings.max_call_seconds)
     if settings.ringing_seconds is not None:

@@ -18,7 +18,7 @@ from automitra_worker.telephony.settings import TelephonySettings
 TELEPHONY = TelephonySettings.from_environment(
     {
         "TELEPHONY_ENABLED": "true",
-        "PLIVO_PHONE_NUMBERS": "+911712345678",
+        "PLIVO_ALLOWED_ADDRESSES": "15.207.90.192/26",
         "PLIVO_SIP_USERNAME": "u",
         "PLIVO_SIP_PASSWORD": "p",
         "TELEPHONY_OUTBOUND_TRUNK_ID": "ST_out",

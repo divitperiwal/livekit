@@ -18,7 +18,7 @@ from automitra_worker.telephony.settings import TelephonyConfigError, TelephonyS
 
 ENABLED = {
     "TELEPHONY_ENABLED": "true",
-    "PLIVO_PHONE_NUMBERS": "+911712345678, +911712345679",
+    "PLIVO_ALLOWED_ADDRESSES": "15.207.90.192/26",
     "PLIVO_SIP_USERNAME": "automitra",
     "PLIVO_SIP_PASSWORD": "secret",
     "TELEPHONY_AGENT_NAME": "automitra-worker",
@@ -44,7 +44,7 @@ def test_telephony_is_off_unless_switched_on():
 
 def test_an_enabled_setup_is_read_whole():
     configured = settings(TELEPHONY_MAX_CALL_SECONDS="900", PLIVO_SIP_ZONE="AP")
-    assert configured.numbers == ("+911712345678", "+911712345679")
+    assert configured.allowed_addresses == ("15.207.90.192/26",)
     assert configured.outbound_address == "ap.sip.plivo.com"
     assert configured.krisp_enabled and configured.max_call_seconds == 900
     assert configured.warnings == ()
@@ -53,10 +53,8 @@ def test_an_enabled_setup_is_read_whole():
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"PLIVO_PHONE_NUMBERS": ""}, "PLIVO_PHONE_NUMBERS is empty"),
-        ({"PLIVO_PHONE_NUMBERS": "01712345678"}, "E.164"),
         ({"PLIVO_SIP_PASSWORD": ""}, "go together"),
-        ({"PLIVO_SIP_USERNAME": "", "PLIVO_SIP_PASSWORD": ""}, "accept SIP from anyone"),
+        ({"PLIVO_ALLOWED_ADDRESSES": ""}, "accept SIP from anyone"),
         ({"PLIVO_SIP_ZONE": "mars"}, "not a Plivo zone"),
         ({"TELEPHONY_RINGING_SECONDS": "0"}, "greater than 0"),
         ({"TELEPHONY_MAX_CALL_SECONDS": "ten"}, "whole number"),
@@ -68,14 +66,21 @@ def test_an_unsafe_or_incomplete_setup_is_refused(overrides, message):
 
 
 def test_an_ip_allowlist_alone_is_enough_and_a_missing_agent_name_is_warned_about():
-    allowlisted = settings(
-        PLIVO_SIP_USERNAME="",
-        PLIVO_SIP_PASSWORD="",
-        PLIVO_ALLOWED_ADDRESSES="15.207.90.192/26",
-        TELEPHONY_AGENT_NAME="",
-    )
+    allowlisted = settings(PLIVO_SIP_USERNAME="", PLIVO_SIP_PASSWORD="", TELEPHONY_AGENT_NAME="")
     assert allowlisted.allowed_addresses == ("15.207.90.192/26",)
     assert any("TELEPHONY_AGENT_NAME" in warning for warning in allowlisted.warnings)
+
+
+def test_a_dial_without_a_caller_id_is_refused_before_livekit():
+    with pytest.raises(TelephonyConfigError, match="no caller ID"):
+        dial_request(
+            settings(),
+            trunk_id="ST_out",
+            room_name="call-1",
+            to_number="+919876543210",
+            from_number=None,
+            participant_identity="phone-+919876543210",
+        )
 
 
 @pytest.mark.parametrize(
@@ -185,6 +190,9 @@ async def test_provisioning_creates_once_and_updates_in_place_on_rerun():
     assert (
         first.inbound.auth_username == "automitra" and first.outbound.address == "ap.sip.plivo.com"
     )
+    # Rented numbers come and go: any number in, any caller ID out, Plivo's addresses only.
+    assert list(first.inbound.numbers) == [] and list(first.outbound.numbers) == ["*"]
+    assert list(first.inbound.allowed_addresses) == ["15.207.90.192/26"]
 
 
 def test_the_dispatch_rule_gives_each_caller_a_room_with_the_named_agent():
