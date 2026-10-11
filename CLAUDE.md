@@ -16,12 +16,18 @@ Voice-as-a-service backend for automitra. AI agents answer and place phone calls
 - **Keys:** only we issue them, from the ops CLI (`api/src/cli.ts`). Stored as SHA-256 hash + prefix. Revocable immediately. Revoking a key stops API requests only; `account suspend` stops everything (keys, campaigns, inbound, optionally live calls).
 - **Money:** one credit check, one function (`api/src/modules/billing/credit-check.ts`). A call starts only if:
   1. `accounts.status` is `active`, and
-  2. `credit_cap_inr` is null, or unpaid usage is under it (postpaid accounts), and
+  2. `credit_cap_inr` is null, or unpaid charges (call usage + number rent) are under it (postpaid accounts), and
   3. `balance_check_url` is null, or it returns `availableInr > 0`, or it does not answer (fail open; 1 s timeout, 30 s cache per org).
 - The account owns its customers' wallets. voiceAi sends `usage.recorded` after each call, retried until delivered, never marked failed. No payment gateway in voiceAi. Payments are recorded by hand from the CLI.
 - **Webhooks and reconciliation:** endpoints belong to the account (optional `org_id` filter). `usage.recorded` is retried until delivered (a check constraint forbids marking it failed). As a backup, the client stores the call id we return and polls `GET /v1/orgs/:externalId/calls/:id` until the call is finalized; debits are idempotent on `usageRecordId`, so webhook + poll never double-charge. No account-wide list endpoint for reconciliation.
 - **`POST /v1/calls` returns the call id.** The API creates the `calls` row (`status = queued`, `request_id` = its id) before dispatch; the worker's open attaches to it through `requestId`. The `/internal/*` contract is unchanged.
 - **Per-key concurrency:** each API key has `max_concurrent_calls` (default 1, set from the CLI). Calls the key placed in `queued` / `ringing` / `in_progress` hold a slot (`calls.api_key_id`); over the limit, `POST /v1/calls` gets 429, nothing is queued. `modules/calls/call-slots.ts` `withCallSlot` locks the key row while counting. Inbound calls hold no key's slot.
+- **Numbers, KYC and rent** (decided 11 Oct 2026; plan: "voiceAi numbers, KYC and rent: build plan", https://claude.ai/code/artifact/eefc802e-b6db-48d8-8c81-2b39838ebfd3):
+  - All numbers live in our one Plivo account. Two ways to get one: **rented** through `/v1` by a key with the `numbers:rent` scope (granted from the CLI to our own platform's keys only: automitra), or **assigned** by us from the CLI (managed accounts such as marcofed, which pay us by bank transfer at a price we set; voiceAi never charges their rent). A number never moves to another business: unassigning or releasing returns it to Plivo.
+  - **KYC is per org** (a Plivo compliance application; documents go straight to Plivo, never stored). Only `accepted` may rent or be assigned a number (409) or call: `POST /v1/calls` 422 (before the credit check), incoming calls 402. **Suspended** (Plivo: unresolved spam complaints, lifted with consent proof) or **expired** (needs a new application): calls are blocked at once, the account is told (`number_kyc.updated`), and a number whose next monthly charge comes before KYC is fixed is released instead of renewed.
+  - **Rent** is wholesale (account → us): monthly, upfront, counted from the rent date; no refund on an early release; the price is the rate card's `numberMonthlyRentInr`, fixed when rented. automitra checks the business's wallet before renting; voiceAi checks only that the account is active and under its credit cap. Renewals always charge. `number.rent_charged` is retried until delivered, like `usage.recorded`.
+  - Deleting an org is refused (409) while it holds numbers; automitra takes a number off WhatsApp before releasing it.
+  - The WhatsApp verification-code window waits for Plivo's answer on SMS to Indian numbers.
 - **v1 feature set is still open:** campaigns, customer HTTP tools, knowledge search and test suites (evals) may be deferred. Core = accounts, keys, orgs, agents, versions, numbers, calls, events, billing, webhooks. Do not build the four optional features until confirmed.
 
 ## Infrastructure (phase 1: ~10,000 call-minutes/month)
@@ -32,7 +38,7 @@ Voice-as-a-service backend for automitra. AI agents answer and place phone calls
 | Recordings and backups | **DigitalOcean Spaces, BLR1** (S3 API, stays in India). `RECORDING_S3_ENDPOINT=https://blr1.digitaloceanspaces.com`, `RECORDING_S3_REGION=blr1`. Code stays S3-generic; local dev uses MinIO. Lifecycle rules expire objects as the backstop to the retention job. |
 | Media and SIP | **LiveKit Cloud, Ship plan ($50), India South.** Plivo Zentrunk → LiveKit SIP → room. |
 | Worker | **Self-hosted** on our Droplet. Tested: LiveKit bills no agent minutes and applies no agent-session limit to a self-hosted worker. Never use LiveKit's agent hosting. |
-| Public ingress | Caddy on 443 exposes `/v1` only (plus Plivo webhooks if adopted). `/internal/*` stays on the Docker network. Firewall: 443, 80, key-only SSH. The worker needs no inbound ports. |
+| Public ingress | Caddy on 443 exposes `/v1` and `/plivo/*` (Plivo's KYC callback) only. `/internal/*` stays on the Docker network. Firewall: 443, 80, key-only SSH. The worker needs no inbound ports. |
 
 ### Operating rules
 
@@ -70,7 +76,10 @@ None of these needs a code change: the code only knows `LIVEKIT_URL`, `DATABASE_
 ## Open items (ask before deciding)
 
 - v1 feature set (above).
-- Who assigns pool numbers to orgs: /v1 (automitra picks) or the ops CLI. Blocks only that one route/command.
+- How consent proof for a suspended KYC application reaches Plivo (its UCC Management; the proof lives in automitra's CRM): by hand, or a `/v1` route.
+- Plivo: are we registered as a reseller; does each number type need its own KYC application per business; can Indian numbers receive SMS and be WhatsApp senders (decides the verification window).
+- The rent price per number (₹/month) for the rate cards: renting is refused (422) on a card without `numberMonthlyRentInr`.
+- LiveKit support must enable `allowed_addresses` on the project before the inbound trunk can be restricted to Plivo.
 - Plivo answer URL in front of LiveKit (reject before LiveKit, fallback to the business's own number when we are down): pending Plivo's answer on how a Dial-to-SIP leg is billed.
 - Local turn-detection model quality for Hindi/Hinglish on a self-hosted worker: verify on real calls.
 - `availableInr` is sell-price headroom, but the worker caps its budget in Sarvam cost at list price, so a call can be charged more than `availableInr` (and the 30 s minimum alone is ₹3). Seen end to end: cap ₹10, a call with ₹2.50 left was charged ₹3.
@@ -79,7 +88,7 @@ None of these needs a code change: the code only knows `LIVEKIT_URL`, `DATABASE_
 
 ```
 worker/   Python 3.13 + uv. Runs the live call. No database, no billing, no accounts.
-api/      Bun + Hono + Drizzle. /internal (worker) and /v1 (accounts), background jobs, ops CLI. /internal, ops CLI, /v1 (except number assignment) and background jobs done.
+api/      Bun + Hono + Drizzle. /internal (worker), /v1 (accounts), /plivo (callbacks), background jobs, ops CLI. All built, numbers and KYC included.
 deploy/   Production compose for the Droplet, Caddyfile, deploy.sh, backup.sh, README (setup, deploy, restore).
 schema/   agent-config.schema.json, GENERATED by worker. Never hand-edit.
 docs/     adr/ (decisions), runbooks/ (one per alert).
@@ -96,14 +105,18 @@ compose.yaml  local Postgres 16, Redis 7, MinIO.
 | `cost/` | `prices.py` (Sarvam list prices, `usage_cost`), `usage_meter.py`, `call_budget.py`, `rate_ceiling.py`, `sentence_gate.py`, `call_cost_control.py` (one call's limits together), `estimate.py` + `costs_cli.py` |
 | `pipeline/voice_assistant.py` | The call's Agent: replies pass the sentence gate; steering appended last to keep Sarvam's prompt cache |
 | `call_tools/` | `end_call.py` (closing lines by hour), `transfer.py` (SIP REFER), `keypad.py`, `silence.py`; customer HTTP tools and knowledge only once confirmed |
-| `telephony/` | `settings.py` (TELEPHONY_*/PLIVO_*), `outbound.py` (dial, failure classification), `voicemail.py`, `provisioning.py` + `cli.py` (`uv run telephony setup|call`) |
+| `telephony/` | `settings.py` (TELEPHONY_*/PLIVO_*), `outbound.py` (dial, failure classification), `voicemail.py`, `provisioning.py` + `cli.py` (`uv run telephony setup|call`). The trunks list no numbers: inbound takes any number from `PLIVO_ALLOWED_ADDRESSES` only (required), outbound allows any caller ID and each dial names the org's number |
 | `call.py` | One call once its agent is known: session, cost limits, events, finalize. `run_call` serves both modes |
 | `control_plane/` | `contract.py` (the `/internal/*` shapes, exported to `schema/internal-api.schema.json`), `client.py` (the only code that calls the API), `resolution.py` (job metadata or dialled number → agent) |
 | `reporting/` | `event_buffer.py`, `call_events.py`, `latency.py`, `call_outcome.py`, `finalize.py`, `recording.py` (RecorderIO → one SigV4 PUT to Spaces), `analysis.py` (summary, disposition, fields, QA; checked against the config) |
 
 ### api data model (`api/src/db/schema/`)
 
-14 tables, replacing the spec's Data model: `accounts`, `api_keys`, `orgs` (tenancy.ts); `agents`, `agent_versions` (agents.ts); `phone_numbers`, `calls`, `call_events`, `suppressed_numbers` (calls.ts); `rate_cards`, `usage_records`, `account_ledger` (billing.ts); `webhook_endpoints`, `webhook_deliveries` (webhooks.ts). No `org_balances`: unpaid usage is summed from `account_ledger`. Optional-feature tables are not created; `calls.campaign_id` / `contact_id` have no FK yet.
+15 tables, replacing the spec's Data model: `accounts`, `api_keys`, `orgs` (tenancy.ts); `agents`, `agent_versions` (agents.ts); `phone_numbers`, `calls`, `call_events`, `suppressed_numbers` (calls.ts); `rate_cards`, `usage_records`, `number_rents`, `account_ledger` (billing.ts); `webhook_endpoints`, `webhook_deliveries` (webhooks.ts). No `org_balances`: unpaid charges are summed from `account_ledger`. Optional-feature tables are not created; `calls.campaign_id` / `contact_id` have no FK yet.
+
+- `phone_numbers`: `source` (`managed` / `rented`), status `renting → assigned → releasing → released` (`available` = in our pool, no org), `monthly_rent_inr`, `rented_at`, `released_at`, `rent_request_key` (the client's Idempotency-Key, unique per org). `e164` is unique only among numbers not released, so a number can be bought again; released rows stay as history.
+- `orgs`: `number_kyc_status` (`none`, `submitted`, `accepted`, `rejected`, `suspended`, `expired`; Plivo's words), Plivo's application id, rejection reason.
+- `number_rents`: one row per number per month, unique on (number, period start), linked from the ledger like `usage_records`. Ledger kinds: `usage`, `number_rent`, `payment`, `adjustment`.
 
 - Tenancy is in the keys: composite FKs stop an agent pointing at another agent's version and a call running another org's version.
 - Billing rows are `restrict`, never cascaded from an org. Orgs are soft-deleted.
@@ -119,7 +132,7 @@ compose.yaml  local Postgres 16, Redis 7, MinIO.
 
 ### api /internal (step 2, done)
 
-- `modules/agents/resolve-call.ts`: pinned version, else agent's live version (candidate for `candidate_percent` of calls), else the assigned number's agent. Then org claim (403), deleted org / archived agent / no live version (404), suspended org (402), credit check (402).
+- `modules/agents/resolve-call.ts`: pinned version, else agent's live version (candidate for `candidate_percent` of calls), else the assigned number's agent. Then org claim (403), deleted org / archived agent / no live version (404), suspended org (402), number KYC not accepted (402), credit check (402).
 - `modules/billing/credit-check.ts` (the one check): account active; `availableInr` = least of (credit cap − unpaid), (daily cap − today's usage, IST day), balance URL answer; null when nothing limits. Balance URL: 1 s timeout via an explicit timer (Bun's `AbortSignal.timeout` does not fire while the loop is idle), 30 s cache per org, fails open with an `ALERT` log.
 - `modules/billing/pricing.ts`: billable = `durationSeconds` rounded up to the card's increment, never under its minimum; 0 for a call that never connected. The worker sends no usage for unanswered calls, so they write no usage row. PSTN cost by longest prefix of the other party's number. Included minutes per IST calendar month. A missing rate costs 0 and sets `needs_review` (g11).
 - `modules/calls/finalize-call.ts`: one transaction, call row locked: outcome, do-not-call entry, usage record, ledger entry, `call.ended` + `usage.recorded` webhooks, `account.credit_low` once when a charge crosses 80% of the cap.
@@ -130,53 +143,68 @@ compose.yaml  local Postgres 16, Redis 7, MinIO.
 
 ### api ops CLI (step 3, done)
 
-`bun run cli help` lists every command. Groups: `account` (create, limits, show, list, suspend [--end-live-calls], resume, payment, adjust), `key` (create, list, revoke, concurrency), `rate-card` (seed, add, list), `number` (add, list). Needs only `DATABASE_URL` and `SECRETS_KEY`; `--end-live-calls` also needs `LIVEKIT_*` and ends rooms through `livekit.ts`.
+`bun run cli help` lists every command. Groups: `account` (create, limits, show, list, suspend [--end-live-calls], resume, payment, adjust), `key` (create, list, revoke, concurrency, scopes), `rate-card` (seed, add, list), `number` (add, list, assign, unassign), `org kyc` (submit, status), `webhook` (add, list, disable, enable). Needs only `DATABASE_URL` and `SECRETS_KEY`; `--end-live-calls` also needs `LIVEKIT_*` (ends rooms through `livekit.ts`); `number assign|unassign` and `org kyc` also need `PLIVO_AUTH_ID` / `PLIVO_AUTH_TOKEN`.
 
 - Keys: `am_live_` + 32 random bytes base64url; prefix = first 16 characters; SHA-256 hex stored (`modules/keys/api-keys.ts`, reused by /v1 auth).
 - Payments and adjustments are idempotent on `--ref`. Negative amounts need `--amount=-500` (Node's parser reads `-500` as a flag).
 - `rate-card seed` = the spec's card (₹6/min, 30 s min, 1 s increments; Sarvam list costs; +91 PSTN ₹0.785/min = Plivo 0.40 + LiveKit SIP 0.385). Adding a card closes the owner's open card at the new card's start.
-- Number assignment to orgs is not in the CLI: waiting on whether /v1 or ops assigns numbers.
+- `key create` never grants `numbers:rent`; `key scopes <prefix> ...` does.
+- Managed numbers: buy by hand in Plivo, point at the inbound trunk in its console, `number add`, then `number assign` (needs accepted KYC; links the number to the org's Plivo application). `number unassign` releases it to Plivo (`releasing` if Plivo fails; the release job retries).
+- `org kyc submit` sends a managed business's details and two files to Plivo (a new application, or a resubmission after a rejection; refused while submitted, accepted or suspended); `org kyc status` reads and stores Plivo's decision.
 - `bun run db:migrate` applies `drizzle/` to `DATABASE_URL` (run before the api starts on each deploy).
 - Verified end to end on Postgres 16 (not PGlite): CLI setup, then the worker's real `ControlPlaneClient` resolving, opening (retry = same id), events (retry inserts 0), three simultaneous finalizes (one charge, ₹7.50 for 75 s), `account.credit_low` at 80%, 402 at the cap; `withCallSlot` with 12 parallel connections placed exactly the limit.
 
-### api /v1 (step 4, done except number assignment)
+### api /v1 (step 4, done)
 
-Every request: `Authorization: Bearer am_live_...`, checked each time (revoked/expired 401, suspended account 403), then a per-key rate limit (`PUBLIC_API_RATE_PER_MIN`, in-process: one api container; move to Redis before a second). Scopes: `orgs:read|write` (orgs, agents, versions, an org's numbers), `calls:read|write`. Another account's org is 404.
+Every request: `Authorization: Bearer am_live_...`, checked each time (revoked/expired 401, suspended account 403), then a per-key rate limit (`PUBLIC_API_RATE_PER_MIN`, in-process: one api container; move to Redis before a second). Scopes: `orgs:read|write` (orgs, agents, versions, an org's numbers, KYC), `calls:read|write`, `numbers:rent` (search, rent, release; ours only). Another account's org is 404.
 
 | Route | Does |
 | --- | --- |
-| `GET /v1/orgs`, `PUT/GET/DELETE /v1/orgs/:externalId` | Upsert by the account's id; delete = soft, numbers back to pool, agents archived, id retired (409) |
+| `GET /v1/orgs`, `PUT/GET/DELETE /v1/orgs/:externalId` | Upsert by the account's id; delete = soft, agents archived, id retired (409); refused (409, listing them) while the org holds numbers |
 | `GET/POST /v1/orgs/:x/agents`, `GET/DELETE .../agents/:id` | Create = agent + version 1 as draft; delete = archive |
 | `PUT .../agents/:id/draft`, `POST .../publish {versionId?}`, `PUT .../experiment {versionId, percent}`, `GET .../versions` | Every save is a new version (g16); publish moves `live`; experiment sets `candidate` |
 | `GET .../numbers`, `PUT .../numbers/:e164 {agentId}` | Which agent answers each of the org's numbers |
-| `POST .../calls {agentId, to, from?, variables?}` | 202 + the call. Refusals: 404 agent, 422 do-not-call (g13) / +91 outside 09:00–21:00 IST (g14) / no live version / no caller ID, 402 credit, 429 key concurrency, 503 dispatch failed or outbound not configured (the call row is marked failed, freeing its slot) |
+| `GET /v1/numbers/available?pattern&city&limit` | Plivo's Indian numbers with the account's monthly rent (`numbers:rent`, 10 a minute per key); 422 if the card has no rent |
+| `POST .../numbers {number}` + `Idempotency-Key` | Rent: 201 `{number, monthlyRentInr, rentedAt, nextChargeAt}`. Writes a `renting` row, buys under the org's application, points it at `PLIVO_INBOUND_TRUNK_ID`, charges the first month, sends `number.rented` + `number.rent_charged`. 409 KYC / number taken / Plivo refused (nothing saved), 402 credit cap, 422 no rent on the card or key reused for another number, 502 Plivo timeout (the same key resumes; never bought twice) |
+| `DELETE .../numbers/:e164` | Release a rented number at once (202, `number.released`); 403 for a number we assigned |
+| `PUT/GET .../number-kyc` | Multipart: `legalName, gstin, addressLine1, addressLine2?, city, state, postalCode` + files `registrationCertificate`, `gstCertificate` (PDF/JPEG/PNG, 5 MB each), straight to Plivo; 202 submitted, 409 already submitted/accepted/suspended, 422 bad file, 503 Plivo's requirements changed (ALERT) |
+| `POST .../calls {agentId, to, from?, variables?}` | 202 + the call. Refusals: 404 agent, 422 do-not-call (g13) / +91 outside 09:00–21:00 IST (g14) / no live version / no caller ID / number KYC not accepted, 402 credit, 429 key concurrency, 503 dispatch failed or outbound not configured (the call row is marked failed, freeing its slot) |
 | `GET .../calls?before&limit&disposition`, `GET .../calls/:id` | Newest first, cursor paging; one call includes its transcript (the poll fallback) |
 
 - Agent configs are checked by `modules/agents/agent-config.ts` (ajv over `schema/agent-config.schema.json` + the five hand rules); g17 runs every shared case.
 - Dispatch metadata (camelCase, read by the worker's `JobMetadata`): `placeCall, direction, orgId, agentId, agentVersionId, toNumber, fromNumber, phoneNumberId, variables, requestId` (= call id). Outbound needs `LIVEKIT_URL/API_KEY/API_SECRET` + `TELEPHONY_AGENT_NAME` (all or none); without them the api starts with outbound off.
-- Webhook endpoints are account settings, managed from the ops CLI (`webhook add|list|disable|enable`), not /v1.
+- Webhook endpoints are account settings, managed from the ops CLI (`webhook add|list|disable|enable`), not /v1. A new endpoint subscribes to every event unless `--events` names some.
+- Numbers need `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_INBOUND_TRUNK_ID`, `PUBLIC_BASE_URL` (all or none); without them those routes answer 503. A Plivo failure reaching the error handler is 502 with Plivo's message.
+- `POST /plivo/kyc/:orgId?token=` (`routes/plivo/`): the token is an HMAC of the org id under `SECRETS_KEY` (`modules/numbers/number-services.ts`), set as the application's callback URL. Plivo's callback body is undocumented, so it is never read: the status is re-read from Plivo. Wrong token or org: 404.
+- Webhook payloads: `number.rented` `{orgId, number, monthlyRentInr, rentedAt, nextChargeAt}`; `number.rent_charged` `{orgId, number, numberRentId, amountInr, periodStart, periodEnd}` (bill on `numberRentId`); `number.released` `{orgId, number}`; `number_kyc.updated` `{orgId, status, rejectionReason}`.
+- `modules/numbers/plivo.ts` is the only code that calls Plivo (search, buy, connect to the trunk, holds, release, compliance requirements/submit/resubmit/status/link); tests use `test/fixtures/fake-plivo.ts`, which keeps Plivo's rules. Plivo names numbers without the `+` in paths and with it in the link body.
 
 ### api background (step 5, done)
 
-`bun run background` (`src/background.ts`, same image as the api). Needs `DATABASE_URL`, `SECRETS_KEY`, `TELEPHONY_MAX_CALL_SECONDS` and `RECORDING_S3_*` (delete access). Jobs (`src/jobs/jobs.ts`, run by `jobs/runner.ts`: each on its own interval, never overlapping itself, a failure logs and retries next tick):
+`bun run background` (`src/background.ts`, same image as the api). Needs `DATABASE_URL`, `SECRETS_KEY`, `TELEPHONY_MAX_CALL_SECONDS` and `RECORDING_S3_*` (delete access); the number jobs also `PLIVO_AUTH_ID` / `PLIVO_AUTH_TOKEN` (both or neither; without them they do not run). Jobs (`src/jobs/jobs.ts`, run by `jobs/runner.ts`: each on its own interval, never overlapping itself, a failure logs and retries next tick):
 
 | Job | Every | Does |
 | --- | --- | --- |
-| deliver-webhooks | 2 s | Leases due rows 2 min (`FOR UPDATE SKIP LOCKED`; two processes split the queue, checked on Postgres 16), POSTs through the SSRF guard with a 10 s timeout. Body `{id, type, createdAt, data}`; headers `X-Automitra-Timestamp`, `X-Automitra-Signature: sha256=<HMAC("<ts>.<body>")>`, `X-Automitra-Event-Id: <event>:<eventKey>`. Retries 1 m, 5 m, 30 m, 2 h, 6 h, 12 h, then failed; `usage.recorded` keeps retrying every 12 h and never fails. Disabled endpoints keep their queue. |
-| usage-delivery-watch | 1 min | ALERT when the oldest pending `usage.recorded` is over 15 min old |
+| deliver-webhooks | 2 s | Leases due rows 2 min (`FOR UPDATE SKIP LOCKED`; two processes split the queue, checked on Postgres 16), POSTs through the SSRF guard with a 10 s timeout. Body `{id, type, createdAt, data}`; headers `X-Automitra-Timestamp`, `X-Automitra-Signature: sha256=<HMAC("<ts>.<body>")>`, `X-Automitra-Event-Id: <event>:<eventKey>`. Retries 1 m, 5 m, 30 m, 2 h, 6 h, 12 h, then failed; billing events (`usage.recorded`, `number.rent_charged`) keep retrying every 12 h and never fail. Disabled endpoints keep their queue. |
+| billing-delivery-watch | 1 min | ALERT `usage-undelivered` / `rent-undelivered` when the oldest pending one is over 15 min old |
 | sweep-stale-calls | 1 min | `queued` over 5 min → failed `dispatch_lost` (g15). Ringing/in progress past max call + 5 min → failed `worker_lost`, left unfinalized so a late finalize still bills |
 | recording-retention | 1 h | Deletes recordings past the org's retention, sets `recording_deleted_at`; a failed delete retries next pass |
 | prune-webhook-deliveries | 1 day | Deletes delivered/failed rows over 30 days old; never pending |
+| monthly-number-rent | 1 h | Charges each rented number's next month on its anniversary (IST calendar months from the rent date, clamped to month end; a missed run catches up; unique per period). KYC not accepted on that date: the number is released instead. Managed numbers are never charged |
+| number-releases | 5 min | Retries releases Plivo did not confirm; ALERT `number-release-stuck` after 1 h |
+| abandoned-rents | 5 min | A `renting` row 15 min old is undone: a bought number goes back to Plivo, the row is deleted; never completed (the business may have picked another number) |
+| kyc-poll-pending / kyc-poll-accepted | 5 min / 6 h | Re-read KYC for `submitted`+`suspended` / `accepted` orgs; catches suspensions and expiries Plivo does not call back about; ALERT `kyc-poll-failed` |
 
 - SSRF guard (`modules/webhooks/safe-fetch.ts`, g05): https only, no credentials in the URL; resolves once, every address must be public (private, loopback, link-local/metadata, CGNAT, ULA, mapped and NAT64 forms blocked); connects to the checked address through node:http `lookup` (Bun calls it in the `all` form) so TLS still verifies the hostname; never follows redirects. Also checked when an endpoint is added.
-- Alerts are log lines `ALERT <name>: ...`; each name has `docs/runbooks/<name>.md`: balance-check-failed-open, credit-low, usage-undelivered, webhook-delivery-failed, lost-dispatch, lost-worker, recording-retention, database-backup-failed (from `deploy/backup.sh`, via `logger`).
+- Alerts are log lines `ALERT <name>: ...`; each name has `docs/runbooks/<name>.md`: balance-check-failed-open, credit-low, usage-undelivered, rent-undelivered, webhook-delivery-failed, lost-dispatch, lost-worker, recording-retention, number-release-stuck, kyc-poll-failed, kyc-requirements-changed, database-backup-failed (from `deploy/backup.sh`, via `logger`).
 
 ### deploy (done; checked locally on Docker 29, not yet on a Droplet)
 
 `deploy/compose.yaml` + `deploy/.env` (from `.env.example`). `deploy.sh`: grace-period check, build, Postgres up, `pgbackrest stanza-create`, migrate, api + background + Caddy, then worker-a and worker-b one at a time with `--wait`.
 
 - Each service gets only the variables it needs (no shared `env_file`). Images: `api/Dockerfile` (context = repo root, for `schema/`), `worker/Dockerfile` (uv, non-root, `agent start` under `init: true`), `deploy/postgres/Dockerfile` (postgres:16 + pgBackRest).
-- Caddy serves `/v1/*` only; anything else gets `{"error":"not found"}` 404. Request bodies are capped at 1 MB.
+- Caddy serves `/v1/*` and `/plivo/*`; anything else gets `{"error":"not found"}` 404. Request bodies are capped at 1 MB, except 12 MB on `/v1/orgs/*/number-kyc` (two mutually exclusive matchers). The Caddyfile has not been run through `caddy validate` yet.
+- After a deploy that changes the trunks, run `uv run telephony setup` once (in a worker container) so LiveKit picks up the new trunk settings.
 - Backups: pgBackRest (chosen over WAL-G: an apt package from the PGDG repo the image already has). `archive_timeout=60`, encrypted (aes-256-cbc), zstd, 2 fulls kept; cron runs `backup.sh` (full weekly, diff daily). Its `pg1-user` must be `automitra`: there is no `postgres` role. A point-in-time restore was tested locally from a posix repo: it stopped at the target commit and the api came back up. Spaces itself is untested.
 - Images must be built once per deploy and keep the same id when nothing changed, or every deploy restarts Postgres and the workers: one building service per image (`api`, `worker-a`; the others `pull_policy: never`) and `BUILDX_NO_DEFAULT_ATTESTATIONS=1` (provenance timestamps change the id).
 - The local turn detector (`v1-mini`) is compiled into `livekit.local_inference`'s native module and loads offline in 0.5 s; `agent download-files` only fetches Silero. A drain with no live calls exits in about a second.
@@ -186,7 +214,7 @@ Every request: `Authorization: Bearer am_live_...`, checked each time (revoked/e
 
 ### api/src/ (planned)
 
-`routes/` stay thin (parse, call a module, respond). `modules/` hold all logic and never import HTTP types. Auth is by folder: `routes/internal/` behind the internal secret, `routes/v1/` behind an API key, `routes/v1/orgs/` additionally behind org scope (account + externalId → org, else 404). `jobs/` are loops for `background.ts` that only call modules.
+`routes/` stay thin (parse, call a module, respond). `modules/` hold all logic and never import HTTP types. Auth is by folder: `routes/internal/` behind the internal secret, `routes/v1/` behind an API key, `routes/v1/orgs/` additionally behind org scope (account + externalId → org, else 404), `routes/plivo/` behind a per-org callback token. `jobs/` are loops for `background.ts` that only call modules.
 
 ## Build order (worker first)
 
@@ -197,7 +225,7 @@ Every request: `Authorization: Bearer am_live_...`, checked each time (revoked/e
 5. Telephony (needs real Plivo and LiveKit accounts)
 6. Recording (port the prototype's `CallRecorder`), post-call analysis, QA
 
-**Status:** worker steps 1–6 built, 393 tests, all offline. Worker-side guarantee tests: 1, 7, 8, 9, 15, 16, 17 (worker halves where the API owns the rest), 18, 20, 21; 1, 7, 8, 18 and 20 were checked by breaking the code and seeing the tests fail. **Not yet live:** no real conversation, Plivo call, Spaces upload or Sarvam analysis has run; that needs `worker/.env` with LiveKit, Sarvam, Plivo and Spaces credentials. Step 5's "billed" and recording/analysis reaching a call record need the API. **Next: the API** (`api/`), starting from `schema/internal-api.schema.json`.
+**Status:** worker steps 1–6 built, 392 tests, all offline. Worker-side guarantee tests: 1, 7, 8, 9, 15, 16, 17 (worker halves where the API owns the rest), 18, 20, 21; 1, 7, 8, 18 and 20 were checked by breaking the code and seeing the tests fail. **Not yet live:** no real conversation, Plivo call, Spaces upload or Sarvam analysis has run; that needs `worker/.env` with LiveKit, Sarvam, Plivo and Spaces credentials. Step 5's "billed" and recording/analysis reaching a call record need the API. **Next: the API** (`api/`), starting from `schema/internal-api.schema.json`.
 
 - Step 4 fixes to the prototype: a resolved `availableInr` of 0 or less refuses the call (the prototype capped the budget to 0, which switches the budget *off*); latency now reports the dominant component, as the spec requires.
 - The API must implement `schema/internal-api.schema.json` exactly. Writes are idempotent on `lkJobId` (open), (call id, `seq`) (events) and call id (finalize). `orgId` on resolve is a claim to check, never a filter.
@@ -242,7 +270,7 @@ uv run agent console    # talk to the dev-mode agent in the terminal (needs SARV
 uv run agent download-files   # model weights (VAD, turn detector)
 uv run costs            # what the dev-mode agent costs per minute
 uv run telephony setup  # create/update LiveKit SIP trunks + dispatch rule, print Plivo steps
-uv run telephony call +91XXXXXXXXXX   # one outbound call through the running worker
+uv run telephony call +91XXXXXXXXXX --from +91YYYYYYYYYY   # one outbound call through the running worker
 uv run python -m automitra_worker.agent_config.export_schema           # write schema/agent-config.schema.json
 uv run python -m automitra_worker.agent_config.export_schema --check   # CI drift check
 ```
