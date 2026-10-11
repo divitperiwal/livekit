@@ -74,6 +74,20 @@ export async function setApiKeyConcurrency(
   return updated.length > 0;
 }
 
+/** Replaces the key's scopes; takes effect on its next request. */
+export async function setApiKeyScopes(
+  db: Database,
+  prefix: string,
+  scopes: readonly ApiKeyScope[],
+): Promise<boolean> {
+  const updated = await db
+    .update(apiKeys)
+    .set({ scopes: [...scopes] })
+    .where(eq(apiKeys.prefix, prefix))
+    .returning({ id: apiKeys.id });
+  return updated.length > 0;
+}
+
 export function listApiKeys(db: Database, accountId: string) {
   return db
     .select({

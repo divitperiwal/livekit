@@ -125,7 +125,7 @@ compose.yaml  local Postgres 16, Redis 7, MinIO.
 - `modules/calls/finalize-call.ts`: one transaction, call row locked: outcome, do-not-call entry, usage record, ledger entry, `call.ended` + `usage.recorded` webhooks, `account.credit_low` once when a charge crosses 80% of the cap.
 - `modules/privacy/redact.ts` (g19): with `redact_pii`, masks runs of 6+ digits (any script), emails and PAN in event content/payloads, summary and analysis fields. The call's own from/to numbers and the do-not-call list are kept.
 - Webhook payloads: `usage.recorded` = `{orgId: externalId, callId, usageRecordId, priceInr}`; `call.ended` = `{call: toPublicCall(...), transcript}` (`modules/calls/public-call.ts`, also the future `GET /v1/.../calls/:id` shape).
-- Route tests check every request and response against `schema/internal-api.schema.json` with ajv (`test/contracts/worker-contract.ts`), using `test/http/scenario.ts`. Tests have a 30 s timeout via `test/setup.ts` (bunfig's `timeout` key is ignored).
+- Route tests check every request and response against `schema/internal-api.schema.json` with ajv (`test/contracts/worker-contract.ts`), using `test/http/scenario.ts`. Tests need a 30 s timeout (each builds a fresh PGlite): `bun run test` passes `--timeout 30000`. `setDefaultTimeout` in a preload and bunfig's `timeout` key each reach only one test file, so plain `bun test` leaves the rest at Bun's 5 s and fails at random.
 - API guarantee tests: 1, 2 (cold path only; no cache yet), 3, 6, 9, 10, 11 (pricing), 16, 19. Each was checked by removing the code it protects.
 
 ### api ops CLI (step 3, done)
@@ -228,7 +228,7 @@ Every request: `Authorization: Bearer am_live_...`, checked each time (revoked/e
 ```
 cd api
 bun install
-bun test                # PGlite, no Docker or network
+bun run test            # PGlite, no Docker or network; 30 s per test (plain `bun test` times out)
 bun run typecheck
 bun run format          # Prettier, 100 columns; format:check only checks
 bun run dev             # needs DATABASE_URL, INTERNAL_API_SECRET (32+ chars), SECRETS_KEY (openssl rand -base64 32)
@@ -257,5 +257,5 @@ uv run python -m automitra_worker.agent_config.export_schema --check   # CI drif
 - Money is INR; no currency conversion anywhere.
 - Importing any worker module does no work (no network, no model loading). Models load in prewarm only.
 - Migrations: `drizzle-kit generate`, reviewed and committed. Never `drizzle-kit push`.
-- A new enum value: drizzle-kit emits `ALTER TYPE ... ADD VALUE`, which Postgres 16 refuses to use in the same transaction, and all pending migrations run in one. Recreate the type instead (rename, create, `ALTER COLUMN ... USING ::text::`, drop; see `drizzle/0004_numbers_kyc_rent.sql`). PGlite does not catch this: apply every migration to a real Postgres 16 before committing.
+- A new enum value: drizzle-kit emits `ALTER TYPE ... ADD VALUE`, and Postgres 16 refuses to *use* that value (a check, a default, an index predicate) in the same transaction; all pending migrations run in one. If any migration uses it, recreate the type instead (rename, create, `ALTER COLUMN ... USING ::text::`, drop; see `drizzle/0004_numbers_kyc_rent.sql`). PGlite does not catch this: apply every migration to a real Postgres 16 before committing.
 - Ask, don't guess, on: anything in Open items or the spec's Open questions, billing, consent, calling-hour rules, and the v1 feature set.

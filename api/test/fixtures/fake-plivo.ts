@@ -19,7 +19,7 @@ export const FAKE_KYC_DOCUMENT_TYPES: KycDocumentType[] = [
   { documentTypeId: "doc-gst-certificate", name: "GST Certificate", requiredFields: [] },
 ];
 
-type HeldNumber = { complianceApplicationId: string; inboundTrunkId: string | null };
+type HeldNumber = { complianceApplicationId: string | null; inboundTrunkId: string | null };
 type Application = { application: KycApplication; state: KycState };
 type PlivoMethod = keyof Plivo;
 
@@ -127,6 +127,24 @@ export class FakePlivo implements Plivo {
   async kycState(applicationId: string) {
     this.#enter("kycState");
     return { ...this.#application(applicationId).state };
+  }
+
+  async linkNumbers(applicationId: string, e164s: string[]) {
+    this.#enter("linkNumbers");
+    if (this.#application(applicationId).state.status !== "accepted") {
+      throw new PlivoError(400, "compliance application must be accepted");
+    }
+    const notHeld = e164s.filter((e164) => !this.held.has(e164));
+    if (notHeld.length > 0) {
+      throw new PlivoError(null, `could not link ${notHeld.join(", ")}: not on the account`);
+    }
+    for (const e164 of e164s) this.held.get(e164)!.complianceApplicationId = applicationId;
+  }
+
+  /** A number we bought by hand in Plivo's console, before it is assigned to anyone. */
+  holdManaged(e164: string): this {
+    this.held.set(e164, { complianceApplicationId: null, inboundTrunkId: "trunk-in" });
+    return this;
   }
 
   #enter(method: PlivoMethod) {

@@ -8,18 +8,23 @@ import {
   accounts,
   apiKeys,
   calls,
+  orgs,
   phoneNumbers,
   rateCards,
+  webhookDeliveries,
   webhookEndpoints,
+  webhookEvent,
 } from "../../src/db/schema";
 import { hashApiKey } from "../../src/modules/keys/api-keys";
 import { SEED_RATE_CARD } from "../../src/modules/billing/rate-cards";
 import { seedAgentWithVersion, seedCallWithUsage, seedOrg } from "../db/seed";
 import { createTestDatabase } from "../db/test-database";
+import { FakePlivo } from "../fixtures/fake-plivo";
 import { testSecretBox } from "../fixtures/secrets";
 
 async function createCli(roomEnder: (room: string) => Promise<void> = async () => {}) {
   const { db } = await createTestDatabase();
+  const plivo = new FakePlivo();
   const endedRooms: string[] = [];
   let lines: string[] = [];
   const run = async (...argv: string[]) => {
@@ -31,6 +36,7 @@ async function createCli(roomEnder: (room: string) => Promise<void> = async () =
         await roomEnder(room);
         endedRooms.push(room);
       },
+      plivo: () => plivo,
       out: (line) => lines.push(line),
       operator: "cli:test",
       now: () => new Date("2026-10-05T06:30:00Z"),
@@ -42,7 +48,7 @@ async function createCli(roomEnder: (room: string) => Promise<void> = async () =
     });
     return { code, output: lines.join("\n") };
   };
-  return { db, run, endedRooms };
+  return { db, run, endedRooms, plivo };
 }
 
 async function accountRow(db: Awaited<ReturnType<typeof createCli>>["db"], slug: string) {
@@ -400,7 +406,7 @@ describe("webhook", () => {
     const secret = output.match(/whsec_[A-Za-z0-9_-]{43}/)![0];
     const [endpoint] = await db.select().from(webhookEndpoints);
     expect(endpoint).toMatchObject({
-      events: ["call.ended", "usage.recorded", "account.credit_low"],
+      events: [...webhookEvent.enumValues],
       enabled: true,
       orgId: null,
     });
@@ -465,4 +471,224 @@ test("help lists the commands; an unknown group fails", async () => {
   const { run } = await createCli();
   expect((await run("help")).output).toContain("account payment --account <slug>");
   expect((await run("frobnicate")).code).toBe(1);
+});
+
+describe("key scopes", () => {
+  test("numbers:rent is granted only when asked for", async () => {
+    const { run, db } = await createCli();
+    await run("account", "create", "automitra", "--name", "automitra");
+    const { output } = await run("key", "create", "--account", "automitra", "--name", "main");
+    const prefix = output.match(/am_live_[A-Za-z0-9_-]{8}/)![0];
+
+    const granted = await run("key", "scopes", prefix, "orgs:read,orgs:write,numbers:rent");
+    expect(granted.output).toContain("now has orgs:read,orgs:write,numbers:rent");
+    const [stored] = await db.select().from(apiKeys);
+    expect(stored!.scopes).toEqual(["orgs:read", "orgs:write", "numbers:rent"]);
+    expect((await run("key", "scopes", prefix, "numbers:buy")).output).toContain(
+      "unknown scope(s) numbers:buy",
+    );
+  });
+});
+
+/** An account with one org and an endpoint subscribed to the number events. */
+async function managedBusiness() {
+  const cli = await createCli();
+  await cli.run("account", "create", "marcofed", "--name", "Marcofed");
+  const account = await accountRow(cli.db, "marcofed");
+  const org = await seedOrg(cli.db, account.id, "clinic-1");
+  await cli.db.insert(webhookEndpoints).values({
+    accountId: account.id,
+    url: "https://marcofed.example/hooks",
+    secretCiphertext: "x",
+    events: ["number_kyc.updated", "number.released"],
+  });
+  const directory = mkdtempSync(join(tmpdir(), "kyc-"));
+  const registration = join(directory, "incorporation.pdf");
+  const gst = join(directory, "gst.png");
+  writeFileSync(registration, "%PDF-1.7");
+  writeFileSync(gst, "PNG");
+  const submitKyc = (...extra: string[]) =>
+    cli.run(
+      "org",
+      "kyc",
+      "submit",
+      "--account",
+      "marcofed",
+      "--org",
+      "clinic-1",
+      "--legal-name",
+      "Sharma Dental Clinic Pvt Ltd",
+      "--gstin",
+      "29ABCDE1234F1Z5",
+      "--address",
+      "12 MG Road",
+      "--city",
+      "Bengaluru",
+      "--state",
+      "Karnataka",
+      "--pin",
+      "560001",
+      "--registration-certificate",
+      registration,
+      "--gst-certificate",
+      gst,
+      ...extra,
+    );
+  const kycStatus = () =>
+    cli.run("org", "kyc", "status", "--account", "marcofed", "--org", "clinic-1");
+  const orgRow = async () => (await cli.db.select().from(orgs).where(eq(orgs.id, org.id)))[0]!;
+  const queued = (event: "number_kyc.updated" | "number.released") =>
+    cli.db.select().from(webhookDeliveries).where(eq(webhookDeliveries.event, event));
+  return { ...cli, org, submitKyc, kycStatus, orgRow, queued };
+}
+
+describe("org kyc", () => {
+  test("submit sends the documents to Plivo and keeps only the status", async () => {
+    const { submitKyc, orgRow, plivo, queued } = await managedBusiness();
+    const { code, output } = await submitKyc();
+    expect(code).toBe(0);
+    expect(output).toContain("submitted to Plivo as compliance-1");
+
+    const sent = plivo.applications.get("compliance-1")!.application;
+    expect(sent.business).toMatchObject({
+      name: "Sharma Dental Clinic Pvt Ltd",
+      registrationNumber: "29ABCDE1234F1Z5",
+    });
+    expect(sent.documents.map((document) => document.documentTypeId)).toEqual([
+      "doc-registration-certificate",
+      "doc-gst-certificate",
+    ]);
+    expect(sent.documents[0]!.dataFields).toEqual({
+      business_name: "Sharma Dental Clinic Pvt Ltd",
+    });
+    expect(sent.documents.map((document) => document.file.fileName)).toEqual([
+      "incorporation.pdf",
+      "gst.png",
+    ]);
+    expect(await orgRow()).toMatchObject({
+      numberKycStatus: "submitted",
+      numberKycApplicationId: "compliance-1",
+    });
+    const [event] = await queued("number_kyc.updated");
+    expect(event!.payload).toEqual({
+      orgId: "clinic-1",
+      status: "submitted",
+      rejectionReason: null,
+    });
+  });
+
+  test("bad business details and a second submission while under review are refused", async () => {
+    const { submitKyc, plivo } = await managedBusiness();
+    expect((await submitKyc("--gstin", "NOT-A-GSTIN")).output).toContain("gstin");
+    expect(plivo.calls).not.toContain("submitKyc");
+    await submitKyc();
+    expect((await submitKyc()).output).toContain("already with Plivo");
+  });
+
+  test("status stores Plivo's decision; a rejection is fixed on the same application", async () => {
+    const { submitKyc, kycStatus, orgRow, plivo, queued } = await managedBusiness();
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "rejected", "GST name mismatch");
+
+    const rejected = await kycStatus();
+    expect(rejected.output).toContain("rejected");
+    expect(rejected.output).toContain("GST name mismatch");
+    expect((await kycStatus()).output).toMatch(/changedNow\s+false/);
+
+    await submitKyc();
+    expect(plivo.calls.filter((call) => call === "resubmitKyc")).toHaveLength(1);
+    plivo.decideKyc("compliance-1", "accepted");
+    await kycStatus();
+    expect(await orgRow()).toMatchObject({
+      numberKycStatus: "accepted",
+      numberKycApplicationId: "compliance-1",
+      numberKycRejectionReason: null,
+    });
+    const statuses = (await queued("number_kyc.updated")).map((row) => row.payload.status);
+    expect(statuses).toEqual(["submitted", "rejected", "submitted", "accepted"]);
+  });
+
+  test("a suspended application is lifted with consent proof, not new documents", async () => {
+    const { submitKyc, kycStatus, plivo } = await managedBusiness();
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "suspended");
+    await kycStatus();
+    expect((await submitKyc()).output).toContain("consent proof");
+  });
+
+  test("after expiry a new application is filed, and on acceptance the numbers move under it", async () => {
+    const { run, submitKyc, kycStatus, orgRow, plivo } = await managedBusiness();
+    plivo.holdManaged("+918045001234");
+    await run("number", "add", "+918045001234");
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "accepted");
+    await kycStatus();
+    await run("number", "assign", "+918045001234", "--account", "marcofed", "--org", "clinic-1");
+
+    plivo.decideKyc("compliance-1", "expired");
+    await kycStatus();
+    expect((await submitKyc()).output).toContain("compliance-2");
+    plivo.decideKyc("compliance-2", "accepted");
+    await kycStatus();
+
+    expect(await orgRow()).toMatchObject({ numberKycApplicationId: "compliance-2" });
+    expect(plivo.held.get("+918045001234")!.complianceApplicationId).toBe("compliance-2");
+  });
+});
+
+describe("number assign and unassign", () => {
+  test("a pool number goes only to a business with accepted KYC, under its application", async () => {
+    const { run, db, submitKyc, kycStatus, plivo } = await managedBusiness();
+    plivo.holdManaged("+918045001234");
+    await run("number", "add", "+918045001234");
+    const assign = () =>
+      run("number", "assign", "+918045001234", "--account", "marcofed", "--org", "clinic-1");
+
+    expect((await assign()).output).toContain("number KYC not accepted");
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "accepted");
+    await kycStatus();
+
+    expect((await assign()).code).toBe(0);
+    expect(plivo.held.get("+918045001234")!.complianceApplicationId).toBe("compliance-1");
+    const [number] = await db.select().from(phoneNumbers);
+    expect(number).toMatchObject({ status: "assigned", source: "managed" });
+    expect((await assign()).output).toContain("not an available pool number");
+  });
+
+  test("unassign releases the number to Plivo and tells the account", async () => {
+    const { run, db, submitKyc, kycStatus, plivo, queued } = await managedBusiness();
+    plivo.holdManaged("+918045001234");
+    await run("number", "add", "+918045001234");
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "accepted");
+    await kycStatus();
+    await run("number", "assign", "+918045001234", "--account", "marcofed", "--org", "clinic-1");
+
+    expect((await run("number", "unassign", "+918045001234")).output).toContain("released");
+    expect(plivo.held.has("+918045001234")).toBe(false);
+    const [number] = await db.select().from(phoneNumbers);
+    expect(number).toMatchObject({ status: "released", agentId: null });
+    expect(number!.releasedAt).not.toBeNull();
+    const [event] = await queued("number.released");
+    expect(event!.payload).toEqual({ orgId: "clinic-1", number: "+918045001234" });
+    expect((await run("number", "unassign", "+918045001234")).output).toContain(
+      "not held by any business",
+    );
+  });
+
+  test("when Plivo fails, the number stops answering and stays releasing for a retry", async () => {
+    const { run, db, submitKyc, kycStatus, plivo } = await managedBusiness();
+    plivo.holdManaged("+918045001234");
+    await run("number", "add", "+918045001234");
+    await submitKyc();
+    plivo.decideKyc("compliance-1", "accepted");
+    await kycStatus();
+    await run("number", "assign", "+918045001234", "--account", "marcofed", "--org", "clinic-1");
+
+    plivo.failNext("releaseNumber");
+    expect((await run("number", "unassign", "+918045001234")).output).toContain("will be retried");
+    const [number] = await db.select().from(phoneNumbers);
+    expect(number).toMatchObject({ status: "releasing", agentId: null, releasedAt: null });
+  });
 });

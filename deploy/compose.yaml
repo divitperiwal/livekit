@@ -127,6 +127,9 @@ services:
       DATABASE_URL: *database-url
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?}
       SECRETS_KEY: ${SECRETS_KEY:?}
+      # Numbers and KYC; the ops CLI runs in this container.
+      PLIVO_AUTH_ID: ${PLIVO_AUTH_ID:?}
+      PLIVO_AUTH_TOKEN: ${PLIVO_AUTH_TOKEN:?}
     # Any HTTP answer, even a 404, means the server is up.
     healthcheck:
       test: ["CMD", "bun", "--eval", "await fetch('http://localhost:3000/')"]

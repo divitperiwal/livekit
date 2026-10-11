@@ -84,6 +84,8 @@ export type Plivo = {
   /** Replaces every document of a rejected application and submits it again. */
   resubmitKyc(applicationId: string, application: KycApplication): Promise<void>;
   kycState(applicationId: string): Promise<KycState>;
+  /** Puts numbers we hold under an accepted application: a managed number given to a business, or its numbers after a new application. */
+  linkNumbers(applicationId: string, e164s: string[]): Promise<void>;
 };
 
 export class PlivoError extends Error {
@@ -126,6 +128,11 @@ const applicationResponseSchema = z.object({
     status: z.enum(plivoKycStatuses),
     rejection_reason: z.string().nullish(),
   }),
+});
+const linkResponseSchema = z.object({
+  report: z.array(
+    z.object({ number: z.string(), status: z.string(), remarks: z.string().nullish() }),
+  ),
 });
 const errorBodySchema = z.object({ error: z.unknown() });
 
@@ -244,6 +251,23 @@ export function plivoClient(
       });
       const { compliance } = applicationResponseSchema.parse(body);
       return { status: compliance.status, rejectionReason: compliance.rejection_reason ?? null };
+    },
+
+    async linkNumbers(applicationId, e164s) {
+      const { body } = await sendExpecting(send, [200], {
+        method: "POST",
+        path: "PhoneNumber/Compliance/Link/",
+        json: {
+          numbers: e164s.map((number) => ({ number, compliance_application_id: applicationId })),
+        },
+      });
+      const failed = linkResponseSchema
+        .parse(body)
+        .report.filter((entry) => entry.status !== "success");
+      if (failed.length > 0) {
+        const reasons = failed.map((entry) => `${entry.number}: ${entry.remarks ?? entry.status}`);
+        throw new PlivoError(null, `could not link ${reasons.join("; ")}`);
+      }
     },
   };
 }

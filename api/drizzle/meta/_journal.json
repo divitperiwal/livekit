@@ -36,6 +36,13 @@
       "when": 1791677306473,
       "tag": "0004_numbers_kyc_rent",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791679284569,
+      "tag": "0005_number_kyc_suspended",
+      "breakpoints": true
     }
   ]
 }

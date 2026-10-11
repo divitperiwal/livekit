@@ -209,6 +209,37 @@ describe("Plivo client", () => {
     });
   });
 
+  test("linking puts E.164 numbers under the application and fails on any refused number", async () => {
+    const { plivo, requests } = plivoAnswering(() =>
+      Response.json({
+        total_count: 2,
+        updated_count: 1,
+        report: [
+          { number: "+918045001234", status: "success", remarks: "linked" },
+          {
+            number: "+918045001235",
+            status: "failed",
+            remarks: "Number not found on your account",
+          },
+        ],
+      }),
+    );
+    const error = await plivo
+      .linkNumbers("compliance-7", ["+918045001234", "+918045001235"])
+      .catch((e) => e);
+
+    expect(await requests[0]!.json()).toEqual({
+      numbers: [
+        { number: "+918045001234", compliance_application_id: "compliance-7" },
+        { number: "+918045001235", compliance_application_id: "compliance-7" },
+      ],
+    });
+    expect(error).toBeInstanceOf(PlivoError);
+    expect(error.plivoMessage).toBe(
+      "could not link +918045001235: Number not found on your account",
+    );
+  });
+
   test("the Requirements lookup lists document types and their fields", async () => {
     const { plivo, requests } = plivoAnswering(() =>
       Response.json({

@@ -14,7 +14,22 @@ export const orgInputSchema = z.strictObject({
 });
 export type OrgInput = z.infer<typeof orgInputSchema>;
 
-type OrgRow = typeof orgs.$inferSelect;
+export type OrgRow = typeof orgs.$inferSelect;
+
+/** The account's org by its external id; null for another account's or a deleted one. */
+export async function findLiveOrg(
+  db: Database,
+  accountId: string,
+  externalId: string,
+): Promise<OrgRow | null> {
+  const [org] = await db
+    .select()
+    .from(orgs)
+    .where(
+      and(eq(orgs.accountId, accountId), eq(orgs.externalId, externalId), isNull(orgs.deletedAt)),
+    );
+  return org ?? null;
+}
 
 export const toPublicOrg = (org: OrgRow) => ({
   id: org.externalId,

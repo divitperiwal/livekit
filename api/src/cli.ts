@@ -1,12 +1,13 @@
 /**
  * The ops CLI: the only way accounts, keys, payments, rate cards, pool numbers and webhook
- * endpoints are created. `bun src/cli.ts <group> <command> ...`; `bun src/cli.ts help` lists them.
+ * endpoints are created, and how managed accounts' businesses get KYC and numbers. `bun src/cli.ts <group> <command> ...`; `bun src/cli.ts help` lists them.
  */
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
+import { basename } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { and, eq } from "drizzle-orm";
-import { ConfigError, loadCliConfig, loadLiveKitConfig } from "./config";
+import { ConfigError, loadCliConfig, loadLiveKitConfig, loadPlivoConfig } from "./config";
 import { connectDatabase } from "./db/client";
 import type { Database } from "./db/database";
 import { apiKeyScopes, defaultApiKeyScopes, orgs } from "./db/schema";
@@ -29,9 +30,21 @@ import {
   listApiKeys,
   revokeApiKey,
   setApiKeyConcurrency,
+  setApiKeyScopes,
   type ApiKeyScope,
 } from "./modules/keys/api-keys";
+import { assignPoolNumber } from "./modules/numbers/assign-number";
+import {
+  businessDetailsSchema,
+  refreshNumberKyc,
+  submitNumberKyc,
+  type KycDocuments,
+  type NumberKycDependencies,
+} from "./modules/numbers/number-kyc";
+import { plivoClient, type Plivo } from "./modules/numbers/plivo";
 import { addPoolNumber, E164, listNumbers } from "./modules/numbers/pool";
+import { releaseHeldNumber } from "./modules/numbers/release-number";
+import { findLiveOrg } from "./modules/orgs/orgs";
 import { SecretBox } from "./modules/secrets/secret-box";
 import type { WebhookEvent } from "./modules/webhooks/enqueue";
 import {
@@ -51,6 +64,8 @@ export type CliDependencies = {
   secretBox: SecretBox;
   /** Built only when a command needs LiveKit. */
   roomEnder: () => RoomEnder;
+  /** Built only when a command needs Plivo. */
+  plivo: () => Plivo;
   out: (line: string) => void;
   operator: string;
   now?: () => Date;
@@ -72,12 +87,17 @@ key create --account <slug> --name <name> [--max-concurrent-calls <n>] [--scopes
 key list --account <slug>
 key revoke <prefix>
 key concurrency <prefix> <n>
+key scopes <prefix> <scope,...>   (numbers:rent lets the key rent and release numbers)
 rate-card seed [--from <ISO time>]
 rate-card add --name <name> --file <rates.json> [--account <slug>] [--from <ISO time>]
 rate-card list [--account <slug>]
 number add <+E164>...
 number list
-webhook add --account <slug> --url <https url> [--events call.ended,usage.recorded,account.credit_low] [--org <external id>] [--description <text>]
+number assign <+E164> --account <slug> --org <external id>   (needs accepted number KYC)
+number unassign <+E164>   (gives it back to Plivo; a number never moves to another business)
+org kyc submit --account <slug> --org <external id> --legal-name <name> --gstin <GSTIN> --address <line 1> [--address2 <line 2>] --city <city> --state <state> --pin <PIN code> --registration-certificate <file> --gst-certificate <file>
+org kyc status --account <slug> --org <external id>   (asks Plivo, stores and shows the status)
+webhook add --account <slug> --url <https url> [--events <event,...> (default: all)] [--org <external id>] [--description <text>]
 webhook list --account <slug>
 webhook disable|enable --account <slug> <endpoint id>`;
 
@@ -391,6 +411,16 @@ async function keyCommand(deps: CliDependencies, command: string | undefined, ar
       }
       return out(`${prefix} may now have ${limit} live call(s) at once`);
     }
+    case "scopes": {
+      const { positionals } = parse(args, {});
+      const prefix = required(positionals[0], "key prefix");
+      const scopes = parseList(required(positionals[1], "scopes"));
+      refuseUnknown("scope", scopes, apiKeyScopes);
+      if (!(await setApiKeyScopes(db, prefix, scopes as ApiKeyScope[]))) {
+        throw new CliError(`no key with prefix ${prefix}`);
+      }
+      return out(`${prefix} now has ${scopes.join(",")}`);
+    }
     default:
       throw new CliError(`unknown command: key ${command ?? ""}\n\n${USAGE}`);
   }
@@ -478,8 +508,119 @@ async function numberCommand(deps: CliDependencies, command: string | undefined,
     }
     case "list":
       return table(out, await listNumbers(db));
+    case "assign": {
+      const { values, positionals } = parse(args, orgOptions);
+      const e164 = e164Argument(positionals[0]);
+      const org = await orgByFlags(db, values);
+      const outcome = await assignPoolNumber({ db, plivo: deps.plivo() }, e164, org);
+      if (outcome.kind === "refused") throw new CliError(outcome.reason);
+      return out(`${e164} now belongs to ${org.externalId}; point it at an agent through /v1`);
+    }
+    case "unassign": {
+      const { positionals } = parse(args, {});
+      const e164 = e164Argument(positionals[0]);
+      const outcome = await releaseHeldNumber({ db, plivo: deps.plivo(), now: deps.now }, e164);
+      if (outcome.kind === "not_found") throw new CliError(`${e164} is not held by any business`);
+      if (outcome.kind === "pending") {
+        return out(
+          `${e164} stopped answering; Plivo did not confirm the release (${outcome.reason}), it will be retried`,
+        );
+      }
+      return out(`${e164} released to Plivo`);
+    }
     default:
       throw new CliError(`unknown command: number ${command ?? ""}\n\n${USAGE}`);
+  }
+}
+
+const orgOptions = { account: { type: "string" }, org: { type: "string" } } satisfies Options;
+
+async function orgByFlags(db: Database, values: { account?: string; org?: string }) {
+  const account = await accountBySlug(db, values.account);
+  const externalId = required(values.org, "--org");
+  const org = await findLiveOrg(db, account.id, externalId);
+  if (!org) throw new CliError(`${account.slug} has no org "${externalId}"`);
+  return org;
+}
+
+function e164Argument(value: string | undefined): string {
+  const e164 = required(value, "number");
+  if (!E164.test(e164)) throw new CliError(`not E.164: ${e164}`);
+  return e164;
+}
+
+async function kycFile(path: string | undefined, flag: string) {
+  const file = Bun.file(required(path, flag));
+  if (!(await file.exists())) throw new CliError(`${flag}: no file at ${path}`);
+  return { fileName: basename(String(path)), content: file };
+}
+
+async function orgCommand(deps: CliDependencies, command: string | undefined, args: string[]) {
+  if (command !== "kyc") throw new CliError(`unknown command: org ${command ?? ""}\n\n${USAGE}`);
+  const [action, ...rest] = args;
+  const { db, out } = deps;
+  const kycDeps = (): NumberKycDependencies => ({
+    db,
+    plivo: deps.plivo(),
+    callbackUrl: null,
+    now: deps.now,
+  });
+  switch (action) {
+    case "submit": {
+      const { values } = parse(rest, {
+        ...orgOptions,
+        "legal-name": { type: "string" },
+        gstin: { type: "string" },
+        address: { type: "string" },
+        address2: { type: "string" },
+        city: { type: "string" },
+        state: { type: "string" },
+        pin: { type: "string" },
+        "registration-certificate": { type: "string" },
+        "gst-certificate": { type: "string" },
+      });
+      const org = await orgByFlags(db, values);
+      const business = businessDetailsSchema.safeParse({
+        legalName: values["legal-name"],
+        gstin: values.gstin,
+        addressLine1: values.address,
+        addressLine2: values.address2,
+        city: values.city,
+        state: values.state,
+        postalCode: values.pin,
+      });
+      if (!business.success) {
+        const problems = business.error.issues.map(
+          (issue) => `${issue.path.join(".")}: ${issue.message}`,
+        );
+        throw new CliError(`business details: ${problems.join("; ")}`);
+      }
+      const documents: KycDocuments = {
+        registrationCertificate: await kycFile(
+          values["registration-certificate"],
+          "--registration-certificate",
+        ),
+        gstCertificate: await kycFile(values["gst-certificate"], "--gst-certificate"),
+      };
+      const outcome = await submitNumberKyc(kycDeps(), org, business.data, documents);
+      if (outcome.kind === "refused") throw new CliError(outcome.reason);
+      return out(`submitted to Plivo as ${outcome.applicationId}; check with: org kyc status`);
+    }
+    case "status": {
+      const { values } = parse(rest, orgOptions);
+      const { changed } = await refreshNumberKyc(kycDeps(), await orgByFlags(db, values));
+      const org = await orgByFlags(db, values);
+      return show(out, {
+        org: org.externalId,
+        status: org.numberKycStatus,
+        changedNow: changed,
+        application: org.numberKycApplicationId,
+        rejectionReason: org.numberKycRejectionReason,
+        updatedAt: org.numberKycUpdatedAt,
+      });
+    }
+    default:
+      throw new CliError(`unknown command: org kyc ${action ?? ""}\n\n${USAGE}`);
   }
 }
 
@@ -580,6 +721,9 @@ export async function runCli(argv: string[], deps: CliDependencies): Promise<num
       case "webhook":
         await webhookCommand(deps, command, args);
         break;
+      case "org":
+        await orgCommand(deps, command, args);
+        break;
       case undefined:
       case "help":
       case "--help":
@@ -617,6 +761,14 @@ if (import.meta.main) {
         throw error instanceof ConfigError
           ? new CliError(`--end-live-calls needs LiveKit: ${error.message}`)
           : error;
+      }
+    },
+    plivo: () => {
+      try {
+        const config = loadPlivoConfig();
+        return plivoClient({ authId: config.PLIVO_AUTH_ID, authToken: config.PLIVO_AUTH_TOKEN });
+      } catch (error) {
+        throw error instanceof ConfigError ? new CliError(`needs Plivo: ${error.message}`) : error;
       }
     },
     out: (line) => console.log(line),

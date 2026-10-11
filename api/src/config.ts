@@ -68,9 +68,16 @@ const liveKitConfigSchema = z.object({
   LIVEKIT_API_SECRET: z.string().min(1),
 });
 
+/** Buying, linking and releasing numbers, and KYC. Loaded only where a step needs Plivo. */
+const plivoConfigSchema = z.object({
+  PLIVO_AUTH_ID: z.string().min(1),
+  PLIVO_AUTH_TOKEN: z.string().min(1),
+});
+
 export type Config = z.infer<typeof configSchema>;
 export type CliConfig = z.infer<typeof cliConfigSchema>;
 export type LiveKitConfig = z.infer<typeof liveKitConfigSchema>;
+export type PlivoConfig = z.infer<typeof plivoConfigSchema>;
 export type BackgroundConfig = z.infer<typeof backgroundConfigSchema>;
 
 export class ConfigError extends Error {}
@@ -91,5 +98,7 @@ export const loadConfig = (env: Env = process.env): Config => parseEnv(configSch
 export const loadCliConfig = (env: Env = process.env): CliConfig => parseEnv(cliConfigSchema, env);
 export const loadLiveKitConfig = (env: Env = process.env): LiveKitConfig =>
   parseEnv(liveKitConfigSchema, env);
+export const loadPlivoConfig = (env: Env = process.env): PlivoConfig =>
+  parseEnv(plivoConfigSchema, env);
 export const loadBackgroundConfig = (env: Env = process.env): BackgroundConfig =>
   parseEnv(backgroundConfigSchema, env);

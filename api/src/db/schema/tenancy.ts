@@ -80,12 +80,18 @@ export const apiKeys = pgTable(
 
 export const orgStatus = pgEnum("org_status", ["active", "suspended"]);
 
-/** Plivo's compliance application for the org's numbers. Only `accepted` may hold numbers or place calls. */
+/**
+ * Plivo's compliance application for the org's numbers. Only `accepted` may hold numbers or
+ * place calls. `suspended` (unresolved spam complaints) and `expired` block calls at once;
+ * unfixed by a number's next monthly charge, the number is released instead of renewed.
+ */
 export const numberKycStatus = pgEnum("number_kyc_status", [
   "none",
   "submitted",
   "accepted",
   "rejected",
+  "suspended",
+  "expired",
 ]);
 
 /** A business of one account, named by the account's own id for it. Soft-deleted only. */

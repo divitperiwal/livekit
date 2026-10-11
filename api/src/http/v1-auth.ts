@@ -1,13 +1,12 @@
-import { and, eq, isNull } from "drizzle-orm";
 import type { Context, MiddlewareHandler } from "hono";
 import type { Database } from "../db/database";
-import { orgs } from "../db/schema";
 import type { ApiKeyScope } from "../modules/keys/api-keys";
 import { authenticateApiKey, type AuthenticatedKey } from "../modules/keys/authenticate";
+import { findLiveOrg, type OrgRow } from "../modules/orgs/orgs";
 import { HttpError } from "./errors";
 import type { FixedWindowRateLimiter } from "./rate-limit";
 
-export type OrgRow = typeof orgs.$inferSelect;
+export type { OrgRow };
 export type V1Env = { Variables: { apiKey: AuthenticatedKey; org: OrgRow } };
 
 /** Bearer key on every /v1 request, then the per-key rate limit. */
@@ -45,16 +44,7 @@ export function requireOrg(db: Database): MiddlewareHandler<V1Env> {
   return async (c, next) => {
     const externalId = c.req.param("externalId");
     if (!externalId) throw new HttpError(404, "org not found");
-    const [org] = await db
-      .select()
-      .from(orgs)
-      .where(
-        and(
-          eq(orgs.accountId, c.get("apiKey").accountId),
-          eq(orgs.externalId, externalId),
-          isNull(orgs.deletedAt),
-        ),
-      );
+    const org = await findLiveOrg(db, c.get("apiKey").accountId, externalId);
     if (!org) throw new HttpError(404, "org not found");
     c.set("org", org);
     await next();
