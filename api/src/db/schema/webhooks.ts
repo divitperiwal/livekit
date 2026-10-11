@@ -18,7 +18,14 @@ export const webhookEvent = pgEnum("webhook_event", [
   "call.ended",
   "usage.recorded",
   "account.credit_low",
+  "number.rented",
+  "number.released",
+  "number.rent_charged",
+  "number_kyc.updated",
 ]);
+
+/** The account bills its businesses from these: retried until delivered, never marked failed. */
+export const billingWebhookEvents = ["usage.recorded", "number.rent_charged"] as const;
 
 /** Owned by the account; `org_id` narrows it to one org's events. */
 export const webhookEndpoints = pgTable(
@@ -44,8 +51,8 @@ export const deliveryStatus = pgEnum("webhook_delivery_status", ["pending", "del
 
 /**
  * Queued in the same transaction as the change. At-least-once; receivers dedupe on
- * `X-Automitra-Event-Id`. `usage.recorded` is retried until delivered and can never be
- * marked failed: the account debits its customers' wallets from it.
+ * `X-Automitra-Event-Id`. Billing events are retried until delivered and can never be
+ * marked failed: the account debits its customers' wallets from them.
  */
 export const webhookDeliveries = pgTable(
   "webhook_deliveries",
@@ -55,7 +62,7 @@ export const webhookDeliveries = pgTable(
       .notNull()
       .references(() => webhookEndpoints.id, { onDelete: "restrict" }),
     event: webhookEvent("event").notNull(),
-    /** The id the event is about (call, usage record); unique per endpoint and event. */
+    /** The id the event is about (call, usage record, number rent); unique per endpoint and event. */
     eventKey: text("event_key").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     status: deliveryStatus("status").notNull().default("pending"),
@@ -74,8 +81,8 @@ export const webhookDeliveries = pgTable(
       .on(t.nextAttemptAt)
       .where(sql`${t.status} = 'pending'`),
     check(
-      "webhook_deliveries_usage_never_fails",
-      sql`${t.event} <> 'usage.recorded' or ${t.status} <> 'failed'`,
+      "webhook_deliveries_billing_never_fails",
+      sql`${t.event} not in ('usage.recorded', 'number.rent_charged') or ${t.status} <> 'failed'`,
     ),
   ],
 );

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { accounts, apiKeyScopes, orgs, phoneNumbers, rateCards } from "../../src/db/schema";
 import { issueApiKey, type ApiKeyScope } from "../../src/modules/keys/api-keys";
 import { seedLikeRates } from "../fixtures/rate-card";
@@ -65,6 +65,7 @@ export async function createV1Scenario(
       .values({ e164: ORG_NUMBER, orgId: org!.id, agentId: agent.id, status: "assigned" })
       .onConflictDoUpdate({
         target: phoneNumbers.e164,
+        targetWhere: isNull(phoneNumbers.releasedAt),
         set: { orgId: org!.id, agentId: agent.id, status: "assigned" },
       });
     return { org: org!, agentId: agent.id as string };

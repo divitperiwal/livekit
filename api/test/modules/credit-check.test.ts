@@ -3,7 +3,13 @@ import { eq } from "drizzle-orm";
 import { accountLedger, accounts } from "../../src/db/schema";
 import { BalanceChecker } from "../../src/modules/billing/balance-check";
 import { checkCredit } from "../../src/modules/billing/credit-check";
-import { seedAccount, seedAgentWithVersion, seedCallWithUsage, seedOrg } from "../db/seed";
+import {
+  seedAccount,
+  seedAgentWithVersion,
+  seedCallWithUsage,
+  seedOrg,
+  seedRentedNumber,
+} from "../db/seed";
 import { createTestDatabase } from "../db/test-database";
 import { testSecretBox } from "../fixtures/secrets";
 
@@ -41,7 +47,9 @@ async function accountWithOneOrg(
       amountInr,
       idempotencyKey: crypto.randomUUID(),
     });
-  return { check, charge, pay };
+  const chargeRent = (monthlyRentInr: string) =>
+    seedRentedNumber(db, { accountId: account.id, orgId: org.id }, monthlyRentInr);
+  return { check, charge, chargeRent, pay };
 }
 
 const withBalanceUrl: AccountSettings = {
@@ -66,6 +74,13 @@ describe("the credit check", () => {
     expect(await check()).toEqual({ allowed: true, availableInr: 40 });
     await charge("40.00");
     expect(await check()).toEqual({ allowed: false, reason: "credit cap reached" });
+  });
+
+  test("number rent counts toward the credit cap like call usage", async () => {
+    const { check, charge, chargeRent } = await accountWithOneOrg({ creditCapInr: "100.00" });
+    await chargeRent("30.00");
+    await charge("50.00");
+    expect(await check()).toEqual({ allowed: true, availableInr: 20 });
   });
 
   test("postpaid: a recorded payment lifts the cap", async () => {

@@ -9,7 +9,7 @@ import { and, eq } from "drizzle-orm";
 import { ConfigError, loadCliConfig, loadLiveKitConfig } from "./config";
 import { connectDatabase } from "./db/client";
 import type { Database } from "./db/database";
-import { apiKeyScopes, orgs } from "./db/schema";
+import { apiKeyScopes, defaultApiKeyScopes, orgs } from "./db/schema";
 import { liveKitRoomEnder, type RoomEnder } from "./livekit";
 import {
   ACCOUNT_SLUG,
@@ -336,7 +336,7 @@ async function keyCommand(deps: CliDependencies, command: string | undefined, ar
         account: { type: "string" },
         name: { type: "string" },
         "max-concurrent-calls": { type: "string", default: "1" },
-        scopes: { type: "string", default: apiKeyScopes.join(",") },
+        scopes: { type: "string", default: defaultApiKeyScopes.join(",") },
         expires: { type: "string" },
       });
       const account = await accountBySlug(db, values.account);

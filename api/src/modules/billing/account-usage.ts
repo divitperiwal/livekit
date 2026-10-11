@@ -1,15 +1,16 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db/database";
-import { accountLedger, usageRecords } from "../../db/schema";
+import { accountLedger, chargeLedgerKinds, usageRecords } from "../../db/schema";
 import { startOfIndianDay, startOfIndianMonth } from "../time/india";
 
 type Reader = Database | DatabaseTransaction;
 
-/** Unpaid = usage − payments − adjustments, summed from the ledger. */
-export async function unpaidUsageInr(db: Reader, accountId: string): Promise<number> {
+/** Unpaid = usage + number rent − payments − adjustments, summed from the ledger. */
+export async function unpaidInr(db: Reader, accountId: string): Promise<number> {
+  const isCharge = inArray(accountLedger.kind, [...chargeLedgerKinds]);
   const [row] = await db
     .select({
-      unpaid: sql<string>`coalesce(sum(case when ${accountLedger.kind} = 'usage' then ${accountLedger.amountInr} else -${accountLedger.amountInr} end), 0)`,
+      unpaid: sql<string>`coalesce(sum(case when ${isCharge} then ${accountLedger.amountInr} else -${accountLedger.amountInr} end), 0)`,
     })
     .from(accountLedger)
     .where(eq(accountLedger.accountId, accountId));

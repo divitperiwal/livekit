@@ -43,7 +43,14 @@ export const accounts = pgTable(
 );
 
 /** `orgs:*` covers orgs, agents, versions and an org's numbers; `calls:*` placing and reading calls. */
-export const apiKeyScopes = ["orgs:read", "orgs:write", "calls:read", "calls:write"] as const;
+export const defaultApiKeyScopes = [
+  "orgs:read",
+  "orgs:write",
+  "calls:read",
+  "calls:write",
+] as const;
+/** Buying and releasing numbers in Plivo: granted from the ops CLI to our own platform's keys only. */
+export const apiKeyScopes = [...defaultApiKeyScopes, "numbers:rent"] as const;
 
 /** Issued only from the ops CLI. Only the SHA-256 of the key is stored. */
 export const apiKeys = pgTable(
@@ -73,6 +80,14 @@ export const apiKeys = pgTable(
 
 export const orgStatus = pgEnum("org_status", ["active", "suspended"]);
 
+/** Plivo's compliance application for the org's numbers. Only `accepted` may hold numbers or place calls. */
+export const numberKycStatus = pgEnum("number_kyc_status", [
+  "none",
+  "submitted",
+  "accepted",
+  "rejected",
+]);
+
 /** A business of one account, named by the account's own id for it. Soft-deleted only. */
 export const orgs = pgTable(
   "orgs",
@@ -87,6 +102,11 @@ export const orgs = pgTable(
     recordCalls: boolean("record_calls").notNull().default(false),
     recordingRetentionDays: integer("recording_retention_days").notNull().default(30),
     redactPii: boolean("redact_pii").notNull().default(false),
+    numberKycStatus: numberKycStatus("number_kyc_status").notNull().default("none"),
+    /** Plivo's id for the application; the documents themselves are never stored here. */
+    numberKycApplicationId: text("number_kyc_application_id"),
+    numberKycRejectionReason: text("number_kyc_rejection_reason"),
+    numberKycUpdatedAt: at("number_kyc_updated_at"),
     deletedAt: at("deleted_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -94,5 +114,13 @@ export const orgs = pgTable(
   (t) => [
     unique("orgs_account_external_id_key").on(t.accountId, t.externalId),
     check("orgs_retention_positive", sql`${t.recordingRetentionDays} > 0`),
+    check(
+      "orgs_number_kyc_has_application",
+      sql`(${t.numberKycStatus} = 'none') = (${t.numberKycApplicationId} is null)`,
+    ),
+    check(
+      "orgs_number_kyc_rejection_has_reason",
+      sql`(${t.numberKycStatus} = 'rejected') = (${t.numberKycRejectionReason} is not null)`,
+    ),
   ],
 );

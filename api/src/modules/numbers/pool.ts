@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, isNull } from "drizzle-orm";
 import type { Database } from "../../db/database";
 import { agents, orgs, phoneNumbers } from "../../db/schema";
 
@@ -9,7 +9,7 @@ export async function addPoolNumber(db: Database, e164: string): Promise<boolean
   const inserted = await db
     .insert(phoneNumbers)
     .values({ e164, status: "available" })
-    .onConflictDoNothing({ target: phoneNumbers.e164 })
+    .onConflictDoNothing({ target: phoneNumbers.e164, where: isNull(phoneNumbers.releasedAt) })
     .returning({ id: phoneNumbers.id });
   return inserted.length > 0;
 }

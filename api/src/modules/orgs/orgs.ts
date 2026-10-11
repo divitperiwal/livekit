@@ -87,7 +87,7 @@ export async function deleteOrg(db: Database, orgId: string, now = new Date()) {
     await tx
       .update(phoneNumbers)
       .set({ orgId: null, agentId: null, status: "available" })
-      .where(eq(phoneNumbers.orgId, orgId));
+      .where(and(eq(phoneNumbers.orgId, orgId), eq(phoneNumbers.status, "assigned")));
     await tx.update(agents).set({ status: "archived" }).where(eq(agents.orgId, orgId));
     await tx.update(orgs).set({ deletedAt: now }).where(eq(orgs.id, orgId));
   });

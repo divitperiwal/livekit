@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import { onlyRow, type Database } from "../../db/database";
 import { accounts, calls, orgs } from "../../db/schema";
-import { unpaidUsageInr, usageTodayInr } from "../billing/account-usage";
+import { unpaidInr, usageTodayInr } from "../billing/account-usage";
 import type { SecretBox } from "../secrets/secret-box";
 
 export const ACCOUNT_SLUG = /^[a-z0-9][a-z0-9-]{1,39}$/;
@@ -96,7 +96,7 @@ export async function accountSummary(db: Database, account: AccountRow, now = ne
     creditCapInr: account.creditCapInr,
     dailyCapInr: account.dailyCapInr,
     balanceCheckUrl: account.balanceCheckUrl,
-    unpaidInr: await unpaidUsageInr(db, account.id),
+    unpaidInr: await unpaidInr(db, account.id),
     usageTodayInr: await usageTodayInr(db, account.id, now),
     liveCalls: (await liveCallRooms(db, account.id)).length,
   };

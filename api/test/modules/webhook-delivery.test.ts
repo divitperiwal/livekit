@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { webhookDeliveries, webhookEndpoints } from "../../src/db/schema";
+import { billingWebhookEvents, webhookDeliveries, webhookEndpoints } from "../../src/db/schema";
 import {
   deliverDueWebhooks,
   oldestUndeliveredUsageMs,
@@ -12,11 +12,12 @@ import {
 import { seedAccount } from "../db/seed";
 import { createTestDatabase } from "../db/test-database";
 import { testSecretBox } from "../fixtures/secrets";
+import type { WebhookEvent } from "../../src/modules/webhooks/enqueue";
 
 const SECRET = "whsec_test";
 const T0 = new Date("2026-10-05T06:30:00Z");
 
-async function queueWith(events: ("call.ended" | "usage.recorded")[]) {
+async function queueWith(events: WebhookEvent[]) {
   const { db } = await createTestDatabase();
   const account = await seedAccount(db);
   const [endpoint] = await db
@@ -103,19 +104,26 @@ describe("webhook delivery", () => {
     });
   });
 
-  test("usage.recorded is never marked failed: it keeps retrying every 12 h", async () => {
-    const { deliver, rows, answerWith, setClock } = await queueWith(["usage.recorded"]);
-    answerWith(async () => {
-      throw new Error("connection refused");
-    });
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await deliver();
-      setClock((await rows())[0]!.nextAttemptAt);
-    }
-    const [row] = await rows();
-    expect(row).toMatchObject({ status: "pending", attempts: 10, lastError: "connection refused" });
-    expect(row!.nextAttemptAt.getTime() - T0.getTime()).toBeGreaterThan(0);
-  });
+  test.each([...billingWebhookEvents])(
+    "%s is never marked failed: it keeps retrying every 12 h",
+    async (event) => {
+      const { deliver, rows, answerWith, setClock } = await queueWith([event]);
+      answerWith(async () => {
+        throw new Error("connection refused");
+      });
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await deliver();
+        setClock((await rows())[0]!.nextAttemptAt);
+      }
+      const [row] = await rows();
+      expect(row).toMatchObject({
+        status: "pending",
+        attempts: 10,
+        lastError: "connection refused",
+      });
+      expect(row!.nextAttemptAt.getTime() - T0.getTime()).toBeGreaterThan(0);
+    },
+  );
 
   test("a row leased by one pass is not sent by another", async () => {
     const { deliver, sent, answerWith } = await queueWith([

@@ -1,13 +1,13 @@
 import { createHmac } from "node:crypto";
 import { and, asc, eq, inArray, isNull, lt, lte, min, or, sql } from "drizzle-orm";
 import type { Database } from "../../db/database";
-import { webhookDeliveries, webhookEndpoints } from "../../db/schema";
+import { billingWebhookEvents, webhookDeliveries, webhookEndpoints } from "../../db/schema";
 import type { SecretBox } from "../secrets/secret-box";
 import { errorMessage } from "../../error-message";
 import { safePost, type SafePostOptions } from "./safe-fetch";
 
 const MINUTE = 60_000;
-/** After attempt n fails, wait RETRY_DELAYS_MS[n - 1]. Past the end, a delivery fails (except usage.recorded). */
+/** After attempt n fails, wait RETRY_DELAYS_MS[n - 1]. Past the end, a delivery fails (except billing events). */
 export const RETRY_DELAYS_MS = [1, 5, 30, 120, 360, 720].map((minutes) => minutes * MINUTE);
 export const LEASE_MS = 2 * MINUTE;
 export const DELIVERY_TIMEOUT_MS = 10_000;
@@ -117,9 +117,10 @@ async function attemptDelivery(
   }
 }
 
-/** usage.recorded is never given up on: the account debits from it. */
+/** Billing events are never given up on: the account bills its businesses from them. */
 function givesUpAfter(delivery: Claimed, attempts: number): boolean {
-  return delivery.event !== "usage.recorded" && attempts > RETRY_DELAYS_MS.length;
+  const isBillingEvent = (billingWebhookEvents as readonly string[]).includes(delivery.event);
+  return !isBillingEvent && attempts > RETRY_DELAYS_MS.length;
 }
 
 function retryDelayMs(attempts: number): number {

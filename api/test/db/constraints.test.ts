@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { agents, calls, webhookDeliveries, webhookEndpoints } from "../../src/db/schema";
-import { seedAccount, seedAgentWithVersion, seedOrg } from "./seed";
+import {
+  accountLedger,
+  agents,
+  billingWebhookEvents,
+  calls,
+  numberRents,
+  orgs,
+  phoneNumbers,
+  webhookDeliveries,
+  webhookEndpoints,
+} from "../../src/db/schema";
+import { seedAccount, seedAgentWithVersion, seedOrg, seedRentedNumber } from "./seed";
 import { createTestDatabase, postgresError } from "./test-database";
 
 async function twoOrgsWithAgents() {
@@ -62,8 +72,92 @@ describe("calls", () => {
   });
 });
 
+describe("phone numbers", () => {
+  test("a released number can be bought again, but a number is held only once", async () => {
+    const { db, account, orgA, orgB } = await twoOrgsWithAgents();
+    const { number } = await seedRentedNumber(db, { accountId: account.id, orgId: orgA.id }, "500");
+    await db
+      .update(phoneNumbers)
+      .set({ status: "released", releasedAt: new Date() })
+      .where(eq(phoneNumbers.id, number.id));
+    await seedRentedNumber(db, { accountId: account.id, orgId: orgB.id }, "500");
+
+    const error = await postgresError(
+      db.insert(phoneNumbers).values({ e164: number.e164, status: "available" }),
+    );
+    expect(error.constraint).toBe("phone_numbers_e164_held_key");
+  });
+
+  test("a rented number carries its monthly rent", async () => {
+    const { db, orgA } = await twoOrgsWithAgents();
+    const error = await postgresError(
+      db.insert(phoneNumbers).values({
+        e164: "+918069000009",
+        orgId: orgA.id,
+        source: "rented",
+        status: "assigned",
+        rentedAt: new Date(),
+      }),
+    );
+    expect(error.constraint).toBe("phone_numbers_rented_has_rent");
+  });
+
+  test("only a pool number is available, and only it has no org", async () => {
+    const { db, orgA } = await twoOrgsWithAgents();
+    const assignedWithoutOrg = await postgresError(
+      db.insert(phoneNumbers).values({ e164: "+918069000010", status: "assigned" }),
+    );
+    expect(assignedWithoutOrg.constraint).toBe("phone_numbers_held_has_org");
+    const availableWithOrg = await postgresError(
+      db.insert(phoneNumbers).values({ e164: "+918069000011", orgId: orgA.id }),
+    );
+    expect(availableWithOrg.constraint).toBe("phone_numbers_available_has_no_org");
+  });
+});
+
+describe("number rent", () => {
+  test("a number is charged once per period", async () => {
+    const { db, account, orgA } = await twoOrgsWithAgents();
+    const { rent } = await seedRentedNumber(db, { accountId: account.id, orgId: orgA.id }, "500");
+    const error = await postgresError(
+      db.insert(numberRents).values({ ...rent, id: undefined, createdAt: undefined }),
+    );
+    expect(error.constraint).toBe("number_rents_number_period_key");
+  });
+
+  test("a rent ledger entry must name the rent it charges", async () => {
+    const { db, account } = await twoOrgsWithAgents();
+    const error = await postgresError(
+      db.insert(accountLedger).values({
+        accountId: account.id,
+        kind: "number_rent",
+        amountInr: "500",
+        idempotencyKey: "rent-without-row",
+      }),
+    );
+    expect(error.constraint).toBe("account_ledger_number_rent_links_rent");
+  });
+});
+
+describe("number KYC", () => {
+  test("a submitted application has Plivo's id, and a rejection has its reason", async () => {
+    const { db, orgA } = await twoOrgsWithAgents();
+    const withoutApplication = await postgresError(
+      db.update(orgs).set({ numberKycStatus: "submitted" }).where(eq(orgs.id, orgA.id)),
+    );
+    expect(withoutApplication.constraint).toBe("orgs_number_kyc_has_application");
+    const withoutReason = await postgresError(
+      db
+        .update(orgs)
+        .set({ numberKycStatus: "rejected", numberKycApplicationId: "app-1" })
+        .where(eq(orgs.id, orgA.id)),
+    );
+    expect(withoutReason.constraint).toBe("orgs_number_kyc_rejection_has_reason");
+  });
+});
+
 describe("webhook deliveries", () => {
-  test("usage.recorded can never be marked failed", async () => {
+  test.each([...billingWebhookEvents])("%s can never be marked failed", async (event) => {
     const { db, account } = await twoOrgsWithAgents();
     const [endpoint] = await db
       .insert(webhookEndpoints)
@@ -71,17 +165,12 @@ describe("webhook deliveries", () => {
         accountId: account.id,
         url: "https://example.com/hook",
         secretCiphertext: "x",
-        events: ["usage.recorded"],
+        events: [event],
       })
       .returning();
     const [delivery] = await db
       .insert(webhookDeliveries)
-      .values({
-        endpointId: endpoint!.id,
-        event: "usage.recorded",
-        eventKey: "usage-1",
-        payload: {},
-      })
+      .values({ endpointId: endpoint!.id, event, eventKey: "key-1", payload: {} })
       .returning();
     const error = await postgresError(
       db
@@ -89,7 +178,7 @@ describe("webhook deliveries", () => {
         .set({ status: "failed" })
         .where(eq(webhookDeliveries.id, delivery!.id)),
     );
-    expect(error.constraint).toBe("webhook_deliveries_usage_never_fails");
+    expect(error.constraint).toBe("webhook_deliveries_billing_never_fails");
   });
 
   test("call.ended and usage.recorded for the same call are separate deliveries", async () => {

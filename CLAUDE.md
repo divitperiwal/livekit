@@ -257,4 +257,5 @@ uv run python -m automitra_worker.agent_config.export_schema --check   # CI drif
 - Money is INR; no currency conversion anywhere.
 - Importing any worker module does no work (no network, no model loading). Models load in prewarm only.
 - Migrations: `drizzle-kit generate`, reviewed and committed. Never `drizzle-kit push`.
+- A new enum value: drizzle-kit emits `ALTER TYPE ... ADD VALUE`, which Postgres 16 refuses to use in the same transaction, and all pending migrations run in one. Recreate the type instead (rename, create, `ALTER COLUMN ... USING ::text::`, drop; see `drizzle/0004_numbers_kyc_rent.sql`). PGlite does not catch this: apply every migration to a real Postgres 16 before committing.
 - Ask, don't guess, on: anything in Open items or the spec's Open questions, billing, consent, calling-hour rules, and the v1 feature set.

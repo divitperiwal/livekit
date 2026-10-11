@@ -10,9 +10,10 @@ import {
   pgEnum,
   pgTable,
   text,
+  unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { calls } from "./calls";
+import { calls, phoneNumbers } from "./calls";
 import { at, costInr, createdAt, id, inr } from "./columns";
 import { accounts, orgs } from "./tenancy";
 
@@ -87,12 +88,45 @@ export const usageRecords = pgTable(
   ],
 );
 
-export const ledgerKind = pgEnum("ledger_kind", ["usage", "payment", "adjustment"]);
+/**
+ * One month of a rented number, charged upfront. Unique per number and period, so the
+ * rent job can run again and charge nothing twice.
+ */
+export const numberRents = pgTable(
+  "number_rents",
+  {
+    id: id(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "restrict" }),
+    phoneNumberId: uuid("phone_number_id")
+      .notNull()
+      .references(() => phoneNumbers.id, { onDelete: "restrict" }),
+    periodStart: at("period_start").notNull(),
+    periodEnd: at("period_end").notNull(),
+    amountInr: inr("amount_inr").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("number_rents_number_period_key").on(t.phoneNumberId, t.periodStart),
+    index("number_rents_account_created_idx").on(t.accountId, t.createdAt),
+    check("number_rents_period_order", sql`${t.periodEnd} > ${t.periodStart}`),
+    check("number_rents_amount_nonnegative", sql`${t.amountInr} >= 0`),
+  ],
+);
+
+export const ledgerKind = pgEnum("ledger_kind", ["usage", "number_rent", "payment", "adjustment"]);
+
+/** Ledger kinds that charge the account; payments and adjustments are subtracted from them. */
+export const chargeLedgerKinds = ["usage", "number_rent"] as const;
 
 /**
  * Append-only (guarantee 10; a trigger rejects update and delete). Amounts are positive
- * for usage and payments; an adjustment credits when positive and debits when negative.
- * Unpaid = usage − payments − adjustments.
+ * for charges and payments; an adjustment credits when positive and debits when negative.
+ * Unpaid = usage + number rent − payments − adjustments.
  */
 export const accountLedger = pgTable(
   "account_ledger",
@@ -106,6 +140,9 @@ export const accountLedger = pgTable(
     usageRecordId: uuid("usage_record_id")
       .unique()
       .references(() => usageRecords.id, { onDelete: "restrict" }),
+    numberRentId: uuid("number_rent_id")
+      .unique()
+      .references(() => numberRents.id, { onDelete: "restrict" }),
     idempotencyKey: text("idempotency_key").notNull().unique(),
     /** The payment's own reference (bank transfer, invoice). */
     reference: text("reference"),
@@ -120,8 +157,12 @@ export const accountLedger = pgTable(
       sql`(${t.kind} = 'usage') = (${t.usageRecordId} is not null)`,
     ),
     check(
+      "account_ledger_number_rent_links_rent",
+      sql`(${t.kind} = 'number_rent') = (${t.numberRentId} is not null)`,
+    ),
+    check(
       "account_ledger_amount_sign",
-      sql`case ${t.kind} when 'usage' then ${t.amountInr} >= 0 when 'payment' then ${t.amountInr} > 0 else ${t.amountInr} <> 0 end`,
+      sql`case when ${t.kind} in ('usage', 'number_rent') then ${t.amountInr} >= 0 when ${t.kind} = 'payment' then ${t.amountInr} > 0 else ${t.amountInr} <> 0 end`,
     ),
   ],
 );

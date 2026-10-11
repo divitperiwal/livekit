@@ -1,15 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { onlyRow, type Database } from "../../db/database";
-import { orgs, webhookEndpoints } from "../../db/schema";
+import { orgs, webhookEndpoints, webhookEvent } from "../../db/schema";
 import type { SecretBox } from "../secrets/secret-box";
 import type { WebhookEvent } from "./enqueue";
 
-export const WEBHOOK_EVENTS: readonly WebhookEvent[] = [
-  "call.ended",
-  "usage.recorded",
-  "account.credit_low",
-];
+export const WEBHOOK_EVENTS: readonly WebhookEvent[] = webhookEvent.enumValues;
 
 /** The signing secret, shown once. Receivers verify `X-Automitra-Signature` with it. */
 export function generateWebhookSecret(): string {

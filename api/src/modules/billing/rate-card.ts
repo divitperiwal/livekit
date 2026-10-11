@@ -30,6 +30,8 @@ export const rateCardRatesSchema = z.strictObject({
   incrementSeconds: z.number().int().min(1),
   /** Free minutes per calendar month (IST), per account. */
   includedMinutes: z.number().int().min(0).default(0),
+  /** Rent per number per month, charged upfront. Absent = numbers cannot be rented on this card. */
+  numberMonthlyRentInr: inrRate.optional(),
 });
 
 export type RateCardRates = z.output<typeof rateCardRatesSchema>;

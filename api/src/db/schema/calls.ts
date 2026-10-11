@@ -11,34 +11,86 @@ import {
   pgTable,
   text,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { agents, agentVersions } from "./agents";
-import { at, createdAt, id, updatedAt } from "./columns";
+import { at, createdAt, id, inr, updatedAt } from "./columns";
 import { apiKeys, orgs } from "./tenancy";
 
 export const numberProvider = pgEnum("number_provider", ["plivo"]);
 export const numberDirection = pgEnum("number_direction", ["inbound", "outbound", "both"]);
-export const numberStatus = pgEnum("number_status", ["available", "assigned", "releasing"]);
+/**
+ * `renting`: written before Plivo is asked, so a crash between buying and saving is found
+ * and settled. `releasing`: given back to Plivo by a background job. `released`: history only.
+ */
+export const numberStatus = pgEnum("number_status", [
+  "renting",
+  "available",
+  "assigned",
+  "releasing",
+  "released",
+]);
+/** `managed`: bought by us by hand and assigned from the ops CLI. `rented`: bought through `/v1`. */
+export const numberSource = pgEnum("number_source", ["managed", "rented"]);
 
-/** Org null = in our pool. The org-deletion job returns its numbers to the pool. */
+/**
+ * Org null = in our pool. A released row keeps its org as history, and the same number
+ * may be bought again later, so `e164` is unique only among numbers not yet released.
+ */
 export const phoneNumbers = pgTable(
   "phone_numbers",
   {
     id: id(),
     orgId: uuid("org_id").references(() => orgs.id, { onDelete: "restrict" }),
-    e164: text("e164").notNull().unique(),
+    e164: text("e164").notNull(),
     provider: numberProvider("provider").notNull().default("plivo"),
+    source: numberSource("source").notNull().default("managed"),
     direction: numberDirection("direction").notNull().default("both"),
     status: numberStatus("status").notNull().default("available"),
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     lkDispatchRuleId: text("lk_dispatch_rule_id"),
+    /** Fixed from the rate card when rented; charged upfront each month from `rented_at`. */
+    monthlyRentInr: inr("monthly_rent_inr"),
+    rentedAt: at("rented_at"),
+    releasedAt: at("released_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     index("phone_numbers_org_idx").on(t.orgId),
+    uniqueIndex("phone_numbers_e164_held_key")
+      .on(t.e164)
+      .where(sql`${t.releasedAt} is null`),
     check("phone_numbers_pool_has_no_agent", sql`${t.orgId} is not null or ${t.agentId} is null`),
+    check(
+      "phone_numbers_available_has_no_org",
+      sql`${t.status} <> 'available' or ${t.orgId} is null`,
+    ),
+    check(
+      "phone_numbers_held_has_org",
+      sql`${t.orgId} is not null or ${t.status} in ('available', 'released')`,
+    ),
+    check(
+      "phone_numbers_released_has_time",
+      sql`(${t.status} = 'released') = (${t.releasedAt} is not null)`,
+    ),
+    check(
+      "phone_numbers_released_has_no_agent",
+      sql`${t.status} <> 'released' or ${t.agentId} is null`,
+    ),
+    check(
+      "phone_numbers_rented_has_rent",
+      sql`${t.source} <> 'rented' or ${t.monthlyRentInr} is not null`,
+    ),
+    check(
+      "phone_numbers_rented_has_time",
+      sql`${t.source} <> 'rented' or ${t.status} = 'renting' or ${t.rentedAt} is not null`,
+    ),
+    check(
+      "phone_numbers_rent_nonnegative",
+      sql`${t.monthlyRentInr} is null or ${t.monthlyRentInr} >= 0`,
+    ),
   ],
 );
 

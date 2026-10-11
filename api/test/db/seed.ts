@@ -5,7 +5,9 @@ import {
   agentVersions,
   apiKeys,
   calls,
+  numberRents,
   orgs,
+  phoneNumbers,
   usageRecords,
 } from "../../src/db/schema";
 import type { TestDatabase } from "./test-database";
@@ -105,4 +107,44 @@ export async function seedCallWithUsage(
     idempotencyKey: `usage:${usage!.id}`,
   });
   return { call: call!, usage: usage! };
+}
+
+/** A number rented through `/v1`, with its first month charged as the rent flow writes it. */
+export async function seedRentedNumber(
+  db: TestDatabase,
+  ids: { accountId: string; orgId: string },
+  monthlyRentInr: string,
+  e164 = "+918069000001",
+) {
+  const rentedAt = new Date("2026-10-01T00:00:00Z");
+  const [number] = await db
+    .insert(phoneNumbers)
+    .values({
+      e164,
+      orgId: ids.orgId,
+      source: "rented",
+      status: "assigned",
+      monthlyRentInr,
+      rentedAt,
+    })
+    .returning();
+  const [rent] = await db
+    .insert(numberRents)
+    .values({
+      accountId: ids.accountId,
+      orgId: ids.orgId,
+      phoneNumberId: number!.id,
+      periodStart: rentedAt,
+      periodEnd: new Date("2026-11-01T00:00:00Z"),
+      amountInr: monthlyRentInr,
+    })
+    .returning();
+  await db.insert(accountLedger).values({
+    accountId: ids.accountId,
+    kind: "number_rent",
+    amountInr: monthlyRentInr,
+    numberRentId: rent!.id,
+    idempotencyKey: `number_rent:${rent!.id}`,
+  });
+  return { number: number!, rent: rent! };
 }

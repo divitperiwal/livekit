@@ -11,7 +11,7 @@ export function listOrgNumbers(db: Database, orgId: string) {
       agentId: phoneNumbers.agentId,
     })
     .from(phoneNumbers)
-    .where(eq(phoneNumbers.orgId, orgId))
+    .where(and(eq(phoneNumbers.orgId, orgId), eq(phoneNumbers.status, "assigned")))
     .orderBy(asc(phoneNumbers.e164));
 }
 
@@ -35,7 +35,13 @@ export async function pointNumberAtAgent(
   const updated = await db
     .update(phoneNumbers)
     .set({ agentId })
-    .where(and(eq(phoneNumbers.e164, e164), eq(phoneNumbers.orgId, orgId)))
+    .where(
+      and(
+        eq(phoneNumbers.e164, e164),
+        eq(phoneNumbers.orgId, orgId),
+        eq(phoneNumbers.status, "assigned"),
+      ),
+    )
     .returning({ id: phoneNumbers.id });
   return updated.length > 0
     ? { kind: "ok" }

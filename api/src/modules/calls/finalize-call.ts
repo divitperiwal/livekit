@@ -15,7 +15,7 @@ import {
   suppressedNumbers,
   usageRecords,
 } from "../../db/schema";
-import { billableSecondsThisMonth, unpaidUsageInr } from "../billing/account-usage";
+import { billableSecondsThisMonth, unpaidInr } from "../billing/account-usage";
 import { priceCall, roundPriceInr, type PricedCall } from "../billing/pricing";
 import { findRateCard } from "../billing/rate-card";
 import { isUuid } from "../ids";
@@ -249,7 +249,7 @@ async function recordUsage(
     .returning()
     .then(onlyRow);
 
-  const unpaidBefore = await unpaidUsageInr(tx, org.accountId);
+  const unpaidBefore = await unpaidInr(tx, org.accountId);
   await tx.insert(accountLedger).values({
     accountId: org.accountId,
     kind: "usage",

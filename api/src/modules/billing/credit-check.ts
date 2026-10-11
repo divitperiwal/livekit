@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../../db/database";
 import { accounts } from "../../db/schema";
 import type { SecretBox } from "../secrets/secret-box";
-import { unpaidUsageInr, usageTodayInr } from "./account-usage";
+import { unpaidInr, usageTodayInr } from "./account-usage";
 import type { BalanceChecker } from "./balance-check";
 
 export type CreditCheckResult =
@@ -34,7 +34,7 @@ export async function checkCredit(
   const limits: number[] = [];
 
   if (account.creditCapInr !== null) {
-    const left = Number(account.creditCapInr) - (await unpaidUsageInr(db, accountId));
+    const left = Number(account.creditCapInr) - (await unpaidInr(db, accountId));
     if (left <= 0) return { allowed: false, reason: "credit cap reached" };
     limits.push(left);
   }
