@@ -16,6 +16,25 @@ const OUTBOUND_VARIABLES = [
   "TELEPHONY_AGENT_NAME",
 ] as const;
 
+const NUMBER_VARIABLES = [
+  "PLIVO_AUTH_ID",
+  "PLIVO_AUTH_TOKEN",
+  "PLIVO_INBOUND_TRUNK_ID",
+  "PUBLIC_BASE_URL",
+] as const;
+
+/** A group of variables that must be set together or not at all. */
+function requireTogether(
+  names: readonly string[],
+  config: Record<string, unknown>,
+  context: z.RefinementCtx,
+) {
+  const missing = names.filter((name) => !config[name]);
+  if (missing.length === 0 || missing.length === names.length) return;
+  const message = `required with the other variables of its group (${names.join(", ")})`;
+  for (const name of missing) context.addIssue({ code: "custom", path: [name], message });
+}
+
 const configSchema = z
   .object({
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -33,15 +52,17 @@ const configSchema = z
     /** The worker's agent name: the dispatch target. */
     TELEPHONY_AGENT_NAME: z.string().min(1).optional(),
     TELEPHONY_ROOM_PREFIX: z.string().min(1).default("call"),
+    /** Renting numbers and KYC go through Plivo. All four, or none (number routes answer 503). */
+    PLIVO_AUTH_ID: z.string().min(1).optional(),
+    PLIVO_AUTH_TOKEN: z.string().min(1).optional(),
+    /** The Zentrunk inbound trunk a rented number's calls are sent to. */
+    PLIVO_INBOUND_TRUNK_ID: z.string().min(1).optional(),
+    /** Where Plivo reaches this api from outside, e.g. https://voice.example.com. */
+    PUBLIC_BASE_URL: z.url({ protocol: /^https$/ }).optional(),
   })
   .superRefine((config, context) => {
-    const missing = OUTBOUND_VARIABLES.filter((name) => !config[name]);
-    if (missing.length > 0 && missing.length < OUTBOUND_VARIABLES.length) {
-      const message = `required with the other outbound variables (${OUTBOUND_VARIABLES.join(", ")})`;
-      for (const name of missing) {
-        context.addIssue({ code: "custom", path: [name], message });
-      }
-    }
+    requireTogether(OUTBOUND_VARIABLES, config, context);
+    requireTogether(NUMBER_VARIABLES, config, context);
   });
 
 /** The ops CLI touches only the database. */

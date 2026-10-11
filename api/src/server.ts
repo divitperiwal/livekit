@@ -3,6 +3,8 @@ import { ConfigError, loadConfig } from "./config";
 import { connectDatabase } from "./db/client";
 import { liveKitCallDispatcher } from "./livekit";
 import { BalanceChecker } from "./modules/billing/balance-check";
+import type { NumberServices } from "./modules/numbers/number-services";
+import { plivoClient } from "./modules/numbers/plivo";
 import { SecretBox } from "./modules/secrets/secret-box";
 
 function loadConfigOrExit() {
@@ -34,6 +36,22 @@ if (!dispatcher) {
   );
 }
 
+function numberServices(): NumberServices | null {
+  const { PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN, PLIVO_INBOUND_TRUNK_ID, PUBLIC_BASE_URL } = config;
+  if (!PLIVO_AUTH_ID || !PLIVO_AUTH_TOKEN || !PLIVO_INBOUND_TRUNK_ID || !PUBLIC_BASE_URL) {
+    console.warn(
+      "renting numbers and KYC are off: set PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN, PLIVO_INBOUND_TRUNK_ID and PUBLIC_BASE_URL",
+    );
+    return null;
+  }
+  return {
+    plivo: plivoClient({ authId: PLIVO_AUTH_ID, authToken: PLIVO_AUTH_TOKEN }),
+    inboundTrunkId: PLIVO_INBOUND_TRUNK_ID,
+    publicBaseUrl: PUBLIC_BASE_URL.replace(/\/$/, ""),
+    callbackSecret: config.SECRETS_KEY,
+  };
+}
+
 const database = connectDatabase(config.DATABASE_URL);
 const app = createApp({
   db: database.db,
@@ -41,6 +59,7 @@ const app = createApp({
   balanceChecker: new BalanceChecker(),
   secretBox: new SecretBox(config.SECRETS_KEY),
   dispatcher,
+  numbers: numberServices(),
   roomPrefix: config.TELEPHONY_ROOM_PREFIX,
   ratePerMinute: config.PUBLIC_API_RATE_PER_MIN,
 });

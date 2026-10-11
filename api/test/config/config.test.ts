@@ -33,4 +33,20 @@ describe("config", () => {
       ConfigError,
     );
   });
+
+  test("the Plivo variables come all together or not at all, with an https base URL", () => {
+    const numbers = {
+      PLIVO_AUTH_ID: "MAAUTHID",
+      PLIVO_AUTH_TOKEN: "token",
+      PLIVO_INBOUND_TRUNK_ID: "trunk-in",
+      PUBLIC_BASE_URL: "https://voice.example.com",
+    };
+    expect(loadConfig({ ...valid, ...numbers })).toMatchObject(numbers);
+    expect(() => loadConfig({ ...valid, PLIVO_AUTH_ID: "MAAUTHID" })).toThrow(
+      "PLIVO_INBOUND_TRUNK_ID: required with the other variables of its group",
+    );
+    expect(() =>
+      loadConfig({ ...valid, ...numbers, PUBLIC_BASE_URL: "http://voice.example.com" }),
+    ).toThrow("PUBLIC_BASE_URL");
+  });
 });

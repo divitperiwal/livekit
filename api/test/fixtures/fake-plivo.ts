@@ -55,6 +55,15 @@ export class FakePlivo implements Plivo {
     return this;
   }
 
+  /** An application Plivo already accepted, as test scenarios' orgs have. */
+  acceptApplication(applicationId: string): this {
+    this.applications.set(applicationId, {
+      application: { alias: applicationId } as KycApplication,
+      state: { status: "accepted", rejectionReason: null },
+    });
+    return this;
+  }
+
   /** What Plivo decides about an application (its callback then tells us). */
   decideKyc(applicationId: string, status: PlivoKycStatus, rejectionReason: string | null = null) {
     this.#application(applicationId).state = { status, rejectionReason };

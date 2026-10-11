@@ -42,6 +42,8 @@ export async function createScenario(options: ScenarioOptions = {}) {
       accountId: account!.id,
       externalId: "clinic-42",
       name: "Sharma Clinic",
+      numberKycStatus: "accepted",
+      numberKycApplicationId: "compliance-test",
       ...options.org,
     })
     .returning();

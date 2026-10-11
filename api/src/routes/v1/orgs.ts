@@ -48,7 +48,10 @@ export function orgRoutes({ db }: AppDependencies) {
       c.json(toPublicOrg(c.get("org"))),
     )
     .delete("/:externalId", requireScope("orgs:write"), requireOrg(db), async (c) => {
-      await deleteOrg(db, c.get("org").id);
+      const outcome = await deleteOrg(db, c.get("org").id);
+      if (outcome.kind === "holds_numbers") {
+        throw new HttpError(409, `release the org's numbers first: ${outcome.numbers.join(", ")}`);
+      }
       return c.body(null, 204);
     });
 }

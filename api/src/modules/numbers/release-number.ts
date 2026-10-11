@@ -66,3 +66,29 @@ export async function finishRelease(
   });
   return { kind: "released" };
 }
+
+export type ReleaseRentedOutcome = ReleaseOutcome | { kind: "managed" };
+
+/**
+ * `/v1`: the account gives back a number it rented for this org. Numbers we assigned
+ * (managed accounts) are released only from the ops CLI.
+ */
+export async function releaseRentedNumber(
+  deps: ReleaseDependencies,
+  orgId: string,
+  e164: string,
+): Promise<ReleaseRentedOutcome> {
+  const [number] = await deps.db
+    .select({ source: phoneNumbers.source, status: phoneNumbers.status })
+    .from(phoneNumbers)
+    .where(
+      and(
+        eq(phoneNumbers.orgId, orgId),
+        eq(phoneNumbers.e164, e164),
+        isNull(phoneNumbers.releasedAt),
+      ),
+    );
+  if (!number || number.status === "renting") return { kind: "not_found" };
+  if (number.source === "managed") return { kind: "managed" };
+  return releaseHeldNumber(deps, e164);
+}

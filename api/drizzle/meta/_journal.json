@@ -43,6 +43,13 @@
       "when": 1791679284569,
       "tag": "0005_number_kyc_suspended",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791682894287,
+      "tag": "0006_rent_request_key",
+      "breakpoints": true
     }
   ]
 }

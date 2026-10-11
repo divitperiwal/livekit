@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { agentVersions, phoneNumbers } from "../../src/db/schema";
+import { agentVersions, orgs, phoneNumbers } from "../../src/db/schema";
 import { CLINIC_NUMBER } from "../http/scenario";
 import { agentBody, createV1Scenario, ORG_NUMBER } from "../http/v1-scenario";
 import { TEST_INTERNAL_SECRET } from "../http/test-app";
@@ -32,12 +32,18 @@ describe("orgs", () => {
     expect((await api("PUT", "/orgs/has space", { name: "x" })).status).toBe(400);
   });
 
-  test("deleting returns its numbers to the pool, archives its agents, and the id stays retired", async () => {
+  test("deleting waits until its numbers are released, then archives agents and retires the id", async () => {
     const { api, db, withOrgAndAgent } = await createV1Scenario();
     const { agentId } = await withOrgAndAgent();
+    const refused = await api("DELETE", "/orgs/clinic-42");
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe(`release the org's numbers first: ${ORG_NUMBER}`);
+
+    await db
+      .update(phoneNumbers)
+      .set({ status: "released", agentId: null, releasedAt: new Date() })
+      .where(eq(phoneNumbers.e164, ORG_NUMBER));
     expect((await api("DELETE", "/orgs/clinic-42")).status).toBe(204);
-    const [number] = await db.select().from(phoneNumbers).where(eq(phoneNumbers.e164, ORG_NUMBER));
-    expect(number).toMatchObject({ orgId: null, agentId: null, status: "available" });
     expect((await api("GET", "/orgs/clinic-42")).status).toBe(404);
     expect((await api("GET", `/orgs/clinic-42/agents/${agentId}`)).status).toBe(404);
     expect((await api("PUT", "/orgs/clinic-42", { name: "again" })).status).toBe(409);
@@ -46,8 +52,12 @@ describe("orgs", () => {
 
 describe("agents and versions", () => {
   test("a new agent has a draft and answers nothing until published", async () => {
-    const { api, app } = await createV1Scenario();
+    const { api, app, db } = await createV1Scenario();
     await api("PUT", "/orgs/clinic-42", { name: "Sharma Clinic" });
+    await db
+      .update(orgs)
+      .set({ numberKycStatus: "accepted", numberKycApplicationId: "compliance-test" })
+      .where(eq(orgs.externalId, "clinic-42"));
     const created = await api("POST", "/orgs/clinic-42/agents", agentBody);
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ slug: "receptionist", liveVersionId: null });

@@ -1,0 +1,2 @@
+ALTER TABLE "phone_numbers" ADD COLUMN "rent_request_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "phone_numbers_rent_request_key" ON "phone_numbers" USING btree ("org_id","rent_request_key");

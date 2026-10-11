@@ -46,7 +46,10 @@ export type NumberKycDependencies = {
 export class KycRequirementsChanged extends Error {}
 
 export type SubmitKycOutcome =
-  { kind: "submitted"; applicationId: string } | { kind: "refused"; reason: string };
+  | { kind: "submitted"; applicationId: string }
+  /** The org's KYC is under review, accepted or suspended. */
+  | { kind: "refused"; reason: string }
+  | { kind: "invalid_document"; reason: string };
 
 /**
  * Sends the business's documents to Plivo: a new application the first time or after one
@@ -58,8 +61,10 @@ export async function submitNumberKyc(
   business: BusinessDetails,
   documents: KycDocuments,
 ): Promise<SubmitKycOutcome> {
-  const refusal = submissionRefusal(org.numberKycStatus) ?? invalidDocument(documents);
+  const refusal = submissionRefusal(org.numberKycStatus);
   if (refusal) return { kind: "refused", reason: refusal };
+  const badDocument = invalidDocument(documents);
+  if (badDocument) return { kind: "invalid_document", reason: badDocument };
 
   const documentTypes = await deps.plivo.kycRequirements(RENTED_NUMBER_TYPE);
   const application = kycApplication(deps, org, business, documents, documentTypes);

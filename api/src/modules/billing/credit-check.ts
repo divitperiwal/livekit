@@ -63,3 +63,21 @@ export async function checkCredit(
     availableInr: limits.length > 0 ? Math.round(Math.min(...limits) * 100) / 100 : null,
   };
 }
+
+export type RentCheckResult = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Renting a number: the account is active and its unpaid charges are under its credit cap.
+ * The business's wallet is not asked; the account checks it before renting.
+ */
+export async function checkAccountMayRent(
+  db: Database,
+  accountId: string,
+): Promise<RentCheckResult> {
+  const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+  if (!account) return { allowed: false, reason: "account not found" };
+  if (account.status !== "active") return { allowed: false, reason: "account suspended" };
+  if (account.creditCapInr === null) return { allowed: true };
+  const left = Number(account.creditCapInr) - (await unpaidInr(db, accountId));
+  return left > 0 ? { allowed: true } : { allowed: false, reason: "credit cap reached" };
+}

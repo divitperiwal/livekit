@@ -88,6 +88,10 @@ export async function resolveCall(
   if (org.deletedAt !== null) return { kind: "not_found", reason: "org deleted" };
   if (agent.status !== "active") return { kind: "not_found", reason: "agent archived" };
   if (org.status !== "active") return { kind: "no_credit", reason: "org suspended" };
+  // Plivo refuses calls on numbers whose KYC is not accepted (suspended, expired): so do we.
+  if (org.numberKycStatus !== "accepted") {
+    return { kind: "no_credit", reason: "number KYC not accepted" };
+  }
 
   const credit = await checkCredit(dependencies, org.accountId, org.externalId);
   if (!credit.allowed) return { kind: "no_credit", reason: credit.reason };

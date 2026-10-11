@@ -3,7 +3,9 @@ import type { AppDependencies } from "../../app";
 import { FixedWindowRateLimiter } from "../../http/rate-limit";
 import { requireApiKey, requireOrg, type V1Env } from "../../http/v1-auth";
 import { agentRoutes } from "./agents";
+import { availableNumberRoutes } from "./available-numbers";
 import { v1CallRoutes } from "./calls";
+import { numberKycRoutes } from "./number-kyc";
 import { numberRoutes } from "./numbers";
 import { orgRoutes } from "./orgs";
 
@@ -14,10 +16,12 @@ export function v1Routes(dependencies: AppDependencies) {
   routes.use("*", requireApiKey(dependencies.db, limiter));
   // First: `PUT /orgs/:externalId` creates the org, so it must answer before the org lookup
   // below, whose pattern also matches `/orgs/:externalId` itself.
+  routes.route("/numbers", availableNumberRoutes(dependencies));
   routes.route("/orgs", orgRoutes(dependencies));
   routes.use("/orgs/:externalId/*", requireOrg(dependencies.db));
   routes.route("/orgs/:externalId/agents", agentRoutes(dependencies));
   routes.route("/orgs/:externalId/numbers", numberRoutes(dependencies));
+  routes.route("/orgs/:externalId/number-kyc", numberKycRoutes(dependencies));
   routes.route("/orgs/:externalId/calls", v1CallRoutes(dependencies));
   return routes;
 }

@@ -1,9 +1,21 @@
 {$API_DOMAIN} {
-	request_body {
+	# KYC uploads carry two documents of up to 5 MB each; every other body stays small.
+	# The two matchers exclude each other, so their order does not matter.
+	@kycUpload path_regexp ^/v1/orgs/[^/]+/number-kyc$
+	@otherRequests not path_regexp ^/v1/orgs/[^/]+/number-kyc$
+	request_body @kycUpload {
+		max_size 12MB
+	}
+	request_body @otherRequests {
 		max_size 1MB
 	}
 
 	handle /v1/* {
+		reverse_proxy api:3000
+	}
+
+	# Plivo's callbacks (KYC decisions). Each URL carries its own token.
+	handle /plivo/* {
 		reverse_proxy api:3000
 	}
 

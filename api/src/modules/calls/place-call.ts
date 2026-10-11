@@ -7,6 +7,7 @@ import type { CallDispatcher } from "../../livekit";
 import { versionToRun } from "../agents/resolve-call";
 import { findAgent } from "../agents/agents";
 import { checkCredit, type CreditCheckDependencies } from "../billing/credit-check";
+import type { NumberKycStatus } from "../numbers/number-kyc";
 import { E164 } from "../numbers/pool";
 import { indianMinuteOfDay } from "../time/india";
 import { withCallSlot } from "./call-slots";
@@ -80,7 +81,10 @@ async function findCallerId(db: Database, orgId: string, wanted: string | undefi
  */
 export async function placeCall(
   deps: PlaceCallDependencies,
-  context: { org: { id: string; accountId: string; externalId: string }; apiKeyId: string },
+  context: {
+    org: { id: string; accountId: string; externalId: string; numberKycStatus: NumberKycStatus };
+    apiKeyId: string;
+  },
   input: PlaceCallInput,
 ): Promise<PlaceCallOutcome> {
   const { db, dispatcher, now = () => new Date() } = deps;
@@ -107,6 +111,10 @@ export async function placeCall(
       ? `${input.from} is not one of the org's outbound numbers`
       : "the org has no outbound number";
     return { kind: "rejected", reason };
+  }
+
+  if (org.numberKycStatus !== "accepted") {
+    return { kind: "rejected", reason: "number KYC not accepted" };
   }
 
   const credit = await checkCredit(deps, org.accountId, org.externalId);

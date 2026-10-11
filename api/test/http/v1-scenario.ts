@@ -16,8 +16,7 @@ export const agentBody = {
 
 /**
  * automitra as a client of /v1: an account with a full-scope key, a global rate card,
- * and a pool number that `withOrgAndAgent` hands to the org (number assignment is not in
- * /v1 yet).
+ * and `withOrgAndAgent`, an org with accepted number KYC holding a number.
  */
 export async function createV1Scenario(
   options: Parameters<typeof createTestApp>[0] & {
@@ -52,14 +51,19 @@ export async function createV1Scenario(
       })
     ).key;
   const key = await issue();
-  const api = (method: string, path: string, body?: unknown) => testApp.v1(key, method, path, body);
+  const api = (method: string, path: string, body?: unknown, headers?: Record<string, string>) =>
+    testApp.v1(key, method, path, body, headers);
 
   /** An org with a published agent answering, and calling from, ORG_NUMBER. */
   async function withOrgAndAgent(externalId = "clinic-42") {
     await api("PUT", `/orgs/${externalId}`, { name: "Sharma Clinic" });
     const agent = (await api("POST", `/orgs/${externalId}/agents`, agentBody)).body;
     await api("POST", `/orgs/${externalId}/agents/${agent.id}/publish`, {});
-    const [org] = await db.select().from(orgs).where(eq(orgs.externalId, externalId));
+    const [org] = await db
+      .update(orgs)
+      .set({ numberKycStatus: "accepted", numberKycApplicationId: "compliance-test" })
+      .where(eq(orgs.externalId, externalId))
+      .returning();
     await db
       .insert(phoneNumbers)
       .values({ e164: ORG_NUMBER, orgId: org!.id, agentId: agent.id, status: "assigned" })

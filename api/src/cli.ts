@@ -603,7 +603,7 @@ async function orgCommand(deps: CliDependencies, command: string | undefined, ar
         gstCertificate: await kycFile(values["gst-certificate"], "--gst-certificate"),
       };
       const outcome = await submitNumberKyc(kycDeps(), org, business.data, documents);
-      if (outcome.kind === "refused") throw new CliError(outcome.reason);
+      if (outcome.kind !== "submitted") throw new CliError(outcome.reason);
       return out(`submitted to Plivo as ${outcome.applicationId}; check with: org kyc status`);
     }
     case "status": {

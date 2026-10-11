@@ -93,17 +93,27 @@ export function listOrgs(db: Database, accountId: string, page: { after?: string
     .limit(page.limit);
 }
 
+export type DeleteOrgOutcome = { kind: "deleted" } | { kind: "holds_numbers"; numbers: string[] };
+
 /**
- * Soft delete. Its numbers go back to our pool and its agents are archived, in one
- * transaction; calls, usage and the do-not-call list are kept.
+ * Soft delete: its agents are archived; calls, usage and the do-not-call list are kept.
+ * Refused while it holds numbers: they are released first (rented ones through `/v1`,
+ * ours from the ops CLI), so a number is never taken off WhatsApp by surprise.
  */
-export async function deleteOrg(db: Database, orgId: string, now = new Date()) {
-  await db.transaction(async (tx) => {
-    await tx
-      .update(phoneNumbers)
-      .set({ orgId: null, agentId: null, status: "available" })
-      .where(and(eq(phoneNumbers.orgId, orgId), eq(phoneNumbers.status, "assigned")));
+export async function deleteOrg(
+  db: Database,
+  orgId: string,
+  now = new Date(),
+): Promise<DeleteOrgOutcome> {
+  return db.transaction(async (tx): Promise<DeleteOrgOutcome> => {
+    const held = await tx
+      .select({ e164: phoneNumbers.e164 })
+      .from(phoneNumbers)
+      .where(and(eq(phoneNumbers.orgId, orgId), isNull(phoneNumbers.releasedAt)))
+      .orderBy(asc(phoneNumbers.e164));
+    if (held.length > 0) return { kind: "holds_numbers", numbers: held.map((row) => row.e164) };
     await tx.update(agents).set({ status: "archived" }).where(eq(agents.orgId, orgId));
     await tx.update(orgs).set({ deletedAt: now }).where(eq(orgs.id, orgId));
+    return { kind: "deleted" };
   });
 }

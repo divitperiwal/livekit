@@ -2,7 +2,9 @@ import { createApp } from "../../src/app";
 import { INTERNAL_SECRET_HEADER } from "../../src/contracts/internal";
 import type { CallDispatcher } from "../../src/livekit";
 import { BalanceChecker } from "../../src/modules/billing/balance-check";
+import type { NumberServices } from "../../src/modules/numbers/number-services";
 import { createTestDatabase } from "../db/test-database";
+import { FakePlivo } from "../fixtures/fake-plivo";
 import { testSecretBox } from "../fixtures/secrets";
 
 export const TEST_INTERNAL_SECRET = "test-internal-secret-0123456789abcdef";
@@ -16,7 +18,12 @@ type TestAppOptions = {
   /** Default: records every dispatch and succeeds. Null: outbound calling not configured. */
   dispatcher?: CallDispatcher | null;
   ratePerMinute?: number;
+  /** Default: a fake Plivo. Null: renting and KYC not configured. */
+  plivo?: FakePlivo | null;
 };
+
+export const TEST_INBOUND_TRUNK = "trunk-in-test";
+export const TEST_PUBLIC_BASE_URL = "https://voice.example";
 
 export const TEST_NOW = new Date("2026-10-05T06:30:00Z");
 
@@ -35,12 +42,20 @@ export async function createTestApp(options: TestAppOptions = {}) {
   const recordingDispatcher: CallDispatcher = async (dispatch) => {
     dispatches.push(dispatch);
   };
+  const plivo = options.plivo === undefined ? new FakePlivo() : options.plivo;
+  const numbers: NumberServices | null = plivo && {
+    plivo,
+    inboundTrunkId: TEST_INBOUND_TRUNK,
+    publicBaseUrl: TEST_PUBLIC_BASE_URL,
+    callbackSecret: "test-callback-secret",
+  };
   const app = createApp({
     db,
     config: { INTERNAL_API_SECRET: TEST_INTERNAL_SECRET },
     balanceChecker,
     secretBox: testSecretBox,
     dispatcher: options.dispatcher === undefined ? recordingDispatcher : options.dispatcher,
+    numbers,
     roomPrefix: "call",
     ratePerMinute: options.ratePerMinute ?? 1_000,
     random: options.random,
@@ -61,15 +76,22 @@ export async function createTestApp(options: TestAppOptions = {}) {
   const json = (path: string, body: unknown) =>
     internal(path, { method: "POST", body: JSON.stringify(body) });
 
-  /** A /v1 request with an API key; the body, when given, is sent as JSON. */
-  const v1 = async (key: string | null, method: string, path: string, body?: unknown) => {
-    const headers = new Headers();
+  /** A /v1 request with an API key; a FormData body is sent as multipart, anything else as JSON. */
+  const v1 = async (
+    key: string | null,
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders: Record<string, string> = {},
+  ) => {
+    const headers = new Headers(extraHeaders);
     if (key !== null) headers.set("authorization", `Bearer ${key}`);
-    if (body !== undefined) headers.set("content-type", "application/json");
+    const isForm = body instanceof FormData;
+    if (body !== undefined && !isForm) headers.set("content-type", "application/json");
     const response = await app.request(`/v1${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined || isForm ? (body as FormData | undefined) : JSON.stringify(body),
     });
     const text = await response.text();
     return {
@@ -79,5 +101,5 @@ export async function createTestApp(options: TestAppOptions = {}) {
     };
   };
 
-  return { app, db, internal, json, v1, dispatches };
+  return { app, db, internal, json, v1, dispatches, plivo };
 }

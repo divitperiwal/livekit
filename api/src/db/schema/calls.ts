@@ -54,6 +54,8 @@ export const phoneNumbers = pgTable(
     monthlyRentInr: inr("monthly_rent_inr"),
     rentedAt: at("rented_at"),
     releasedAt: at("released_at"),
+    /** The client's `Idempotency-Key` for the rent: a retry resumes this row instead of buying again. */
+    rentRequestKey: text("rent_request_key"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -62,6 +64,7 @@ export const phoneNumbers = pgTable(
     uniqueIndex("phone_numbers_e164_held_key")
       .on(t.e164)
       .where(sql`${t.releasedAt} is null`),
+    uniqueIndex("phone_numbers_rent_request_key").on(t.orgId, t.rentRequestKey),
     check("phone_numbers_pool_has_no_agent", sql`${t.orgId} is not null or ${t.agentId} is null`),
     check(
       "phone_numbers_available_has_no_org",
