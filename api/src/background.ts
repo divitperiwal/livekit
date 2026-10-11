@@ -3,6 +3,7 @@ import { ConfigError, loadBackgroundConfig } from "./config";
 import { connectDatabase } from "./db/client";
 import { backgroundJobs } from "./jobs/jobs";
 import { startJobs } from "./jobs/runner";
+import { plivoClient } from "./modules/numbers/plivo";
 import { SecretBox } from "./modules/secrets/secret-box";
 import { s3RecordingDeleter } from "./storage";
 
@@ -14,6 +15,13 @@ try {
   process.exit(1);
 }
 
+const { PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN } = config;
+const plivo =
+  PLIVO_AUTH_ID && PLIVO_AUTH_TOKEN
+    ? plivoClient({ authId: PLIVO_AUTH_ID, authToken: PLIVO_AUTH_TOKEN })
+    : null;
+if (!plivo) console.warn("number jobs are off: set PLIVO_AUTH_ID and PLIVO_AUTH_TOKEN");
+
 const database = connectDatabase(config.DATABASE_URL);
 const jobs = startJobs(
   backgroundJobs({
@@ -21,6 +29,7 @@ const jobs = startJobs(
     secretBox: new SecretBox(config.SECRETS_KEY),
     deleteRecording: s3RecordingDeleter(config),
     maxCallSeconds: config.TELEPHONY_MAX_CALL_SECONDS,
+    plivo,
   }),
 );
 console.log("background jobs running");

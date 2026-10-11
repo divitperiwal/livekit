@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../../db/database";
 import { orgs, phoneNumbers, type numberKycStatus } from "../../db/schema";
@@ -248,4 +248,31 @@ async function recordKycState(deps: NumberKycDependencies, org: OrgRow, state: K
       },
     });
   });
+}
+
+export type KycPollResult = { checked: number; changed: number; failed: number };
+
+/**
+ * Re-reads KYC from Plivo for live orgs in these statuses. Plivo's callbacks name only
+ * accepted and rejected, so this is how a suspension or an expiry is noticed.
+ */
+export async function pollNumberKyc(
+  deps: Omit<NumberKycDependencies, "callbackUrl">,
+  statuses: NumberKycStatus[],
+): Promise<KycPollResult> {
+  const due = await deps.db
+    .select()
+    .from(orgs)
+    .where(and(inArray(orgs.numberKycStatus, statuses), isNull(orgs.deletedAt)));
+  const result: KycPollResult = { checked: 0, changed: 0, failed: 0 };
+  for (const org of due) {
+    try {
+      const { changed } = await refreshNumberKyc({ ...deps, callbackUrl: null }, org);
+      result.checked += 1;
+      if (changed) result.changed += 1;
+    } catch {
+      result.failed += 1;
+    }
+  }
+  return result;
 }

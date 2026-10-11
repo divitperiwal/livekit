@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { billingWebhookEvents, webhookDeliveries, webhookEndpoints } from "../../src/db/schema";
 import {
   deliverDueWebhooks,
-  oldestUndeliveredUsageMs,
+  oldestUndeliveredMs,
   pruneWebhookDeliveries,
   RETRY_DELAYS_MS,
   type WebhookPost,
@@ -165,9 +165,9 @@ describe("webhook delivery", () => {
     const { db, deliver, answerWith } = await queueWith(["usage.recorded"]);
     answerWith(async () => ({ status: 500 }));
     await deliver();
-    expect(await oldestUndeliveredUsageMs(db, new Date(T0.getTime() + 20 * 60_000))).toBe(
-      20 * 60_000,
-    );
+    expect(
+      await oldestUndeliveredMs(db, "usage.recorded", new Date(T0.getTime() + 20 * 60_000)),
+    ).toBe(20 * 60_000);
   });
 
   test("pruning removes old finished rows and never a pending one", async () => {

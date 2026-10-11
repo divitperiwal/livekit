@@ -92,3 +92,30 @@ export async function releaseRentedNumber(
   if (number.source === "managed") return { kind: "managed" };
   return releaseHeldNumber(deps, e164);
 }
+
+export type PendingReleaseResult = { released: number; pending: number; stuck: number };
+
+/** A release Plivo has not confirmed for this long pages someone. */
+export const RELEASE_STUCK_MS = 60 * 60_000;
+
+/** Asks Plivo again for every number left `releasing` after a failed release. */
+export async function retryPendingReleases(
+  deps: ReleaseDependencies,
+): Promise<PendingReleaseResult> {
+  const now = deps.now?.() ?? new Date();
+  const pending = await deps.db
+    .select({ id: phoneNumbers.id, e164: phoneNumbers.e164, since: phoneNumbers.updatedAt })
+    .from(phoneNumbers)
+    .where(eq(phoneNumbers.status, "releasing"));
+  const result: PendingReleaseResult = { released: 0, pending: 0, stuck: 0 };
+  for (const number of pending) {
+    const outcome = await finishRelease(deps, number);
+    if (outcome.kind === "released") {
+      result.released += 1;
+      continue;
+    }
+    result.pending += 1;
+    if (now.getTime() - number.since.getTime() > RELEASE_STUCK_MS) result.stuck += 1;
+  }
+  return result;
+}

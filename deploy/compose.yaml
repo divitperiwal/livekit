@@ -148,6 +148,9 @@ services:
       DATABASE_URL: *database-url
       SECRETS_KEY: ${SECRETS_KEY:?}
       TELEPHONY_MAX_CALL_SECONDS: ${TELEPHONY_MAX_CALL_SECONDS:?}
+      # Monthly rent, release retries and the KYC poll.
+      PLIVO_AUTH_ID: ${PLIVO_AUTH_ID:?}
+      PLIVO_AUTH_TOKEN: ${PLIVO_AUTH_TOKEN:?}
 
   worker-a:
     <<: *worker

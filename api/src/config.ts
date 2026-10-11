@@ -68,19 +68,26 @@ const configSchema = z
 /** The ops CLI touches only the database. */
 const cliConfigSchema = z.object({ DATABASE_URL: databaseUrl, SECRETS_KEY: secretsKey });
 
-/** The background process: webhook delivery, the stale-call sweep and recording retention. */
-const backgroundConfigSchema = z.object({
-  DATABASE_URL: databaseUrl,
-  SECRETS_KEY: secretsKey,
-  /** The worker's own limit; a call running past it plus post-call time has lost its worker. */
-  TELEPHONY_MAX_CALL_SECONDS: z.coerce.number().int().min(60),
-  RECORDING_S3_BUCKET: z.string().min(1),
-  RECORDING_S3_REGION: z.string().min(1),
-  RECORDING_S3_ENDPOINT: z.url(),
-  /** Needs delete access; the worker's key needs only write. */
-  RECORDING_S3_ACCESS_KEY: z.string().min(1),
-  RECORDING_S3_SECRET_KEY: z.string().min(1),
-});
+/** The background process: webhook delivery, the stale-call sweep, recording retention and the number jobs. */
+const backgroundConfigSchema = z
+  .object({
+    DATABASE_URL: databaseUrl,
+    SECRETS_KEY: secretsKey,
+    /** The worker's own limit; a call running past it plus post-call time has lost its worker. */
+    TELEPHONY_MAX_CALL_SECONDS: z.coerce.number().int().min(60),
+    RECORDING_S3_BUCKET: z.string().min(1),
+    RECORDING_S3_REGION: z.string().min(1),
+    RECORDING_S3_ENDPOINT: z.url(),
+    /** Needs delete access; the worker's key needs only write. */
+    RECORDING_S3_ACCESS_KEY: z.string().min(1),
+    RECORDING_S3_SECRET_KEY: z.string().min(1),
+    /** Monthly rent, release retries and the KYC poll. Both, or neither (those jobs are off). */
+    PLIVO_AUTH_ID: z.string().min(1).optional(),
+    PLIVO_AUTH_TOKEN: z.string().min(1).optional(),
+  })
+  .superRefine((config, context) => {
+    requireTogether(["PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN"], config, context);
+  });
 
 /** Only for commands that act on live rooms. */
 const liveKitConfigSchema = z.object({

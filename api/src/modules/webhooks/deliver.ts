@@ -11,8 +11,8 @@ const MINUTE = 60_000;
 export const RETRY_DELAYS_MS = [1, 5, 30, 120, 360, 720].map((minutes) => minutes * MINUTE);
 export const LEASE_MS = 2 * MINUTE;
 export const DELIVERY_TIMEOUT_MS = 10_000;
-/** The account debits from usage.recorded: alert when one waits longer than this. */
-export const USAGE_UNDELIVERED_ALERT_MS = 15 * MINUTE;
+/** The account bills its businesses from billing events: alert when one waits longer than this. */
+export const BILLING_UNDELIVERED_ALERT_MS = 15 * MINUTE;
 const PARALLEL_SENDS = 10;
 
 export type WebhookPost = (
@@ -184,14 +184,16 @@ export async function deliverDueWebhooks(deps: DeliveryDependencies) {
   return counts;
 }
 
-/** How long the oldest undelivered usage.recorded has waited, or null when none waits. */
-export async function oldestUndeliveredUsageMs(db: Database, now: Date): Promise<number | null> {
+/** How long the oldest undelivered event of this kind has waited, or null when none waits. */
+export async function oldestUndeliveredMs(
+  db: Database,
+  event: (typeof billingWebhookEvents)[number],
+  now: Date,
+): Promise<number | null> {
   const [row] = await db
     .select({ oldest: min(webhookDeliveries.createdAt) })
     .from(webhookDeliveries)
-    .where(
-      and(eq(webhookDeliveries.event, "usage.recorded"), eq(webhookDeliveries.status, "pending")),
-    );
+    .where(and(eq(webhookDeliveries.event, event), eq(webhookDeliveries.status, "pending")));
   return row?.oldest ? now.getTime() - new Date(row.oldest).getTime() : null;
 }
 

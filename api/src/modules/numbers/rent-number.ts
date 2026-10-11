@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { onlyRow, type Database } from "../../db/database";
 import { accountLedger, numberRents, phoneNumbers } from "../../db/schema";
 import { errorMessage } from "../../error-message";
@@ -279,4 +279,40 @@ export function nextRentDate(rentedAt: Date, now: Date): Date {
 function monthlyRent(row: NumberRow): string {
   if (row.monthlyRentInr === null) throw new Error(`number ${row.id} has no monthly rent`);
   return row.monthlyRentInr;
+}
+
+/** A rent the client has not completed or retried for this long is undone. */
+export const ABANDONED_RENT_MS = 15 * 60_000;
+
+/**
+ * Undoes rents left half-way (Plivo stopped answering and the client never retried with
+ * the same key): a number we bought goes back to Plivo and the reservation is deleted, so
+ * nothing is saved or charged. Completing it instead could charge for a number the
+ * business already gave up on. A Plivo failure leaves the row for the next pass.
+ */
+export async function undoAbandonedRents(
+  deps: Pick<RentDependencies, "db" | "now"> & { plivo: NumberServices["plivo"] },
+): Promise<{ undone: number; pending: number }> {
+  const now = deps.now?.() ?? new Date();
+  const cutoff = new Date(now.getTime() - ABANDONED_RENT_MS);
+  const abandoned = await deps.db
+    .select({ id: phoneNumbers.id, e164: phoneNumbers.e164 })
+    .from(phoneNumbers)
+    .where(and(eq(phoneNumbers.status, "renting"), lt(phoneNumbers.createdAt, cutoff)));
+  const result = { undone: 0, pending: 0 };
+  for (const reservation of abandoned) {
+    try {
+      if (await deps.plivo.holdsNumber(reservation.e164)) {
+        await deps.plivo.releaseNumber(reservation.e164);
+      }
+    } catch {
+      result.pending += 1;
+      continue;
+    }
+    await deps.db
+      .delete(phoneNumbers)
+      .where(and(eq(phoneNumbers.id, reservation.id), eq(phoneNumbers.status, "renting")));
+    result.undone += 1;
+  }
+  return result;
 }
