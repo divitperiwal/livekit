@@ -20,6 +20,7 @@ from livekit.agents import (
 from livekit.plugins import sarvam, silero
 
 from automitra_worker.agent_config.model import AgentConfigModel
+from automitra_worker.pipeline.rate_limit_alert import alert_on_rate_limits
 from automitra_worker.pipeline.realtime_stt import RealtimeSTT
 
 
@@ -60,7 +61,7 @@ def build_session(config: AgentConfigModel, vad: vad_api.VAD) -> AgentSession:
 
 
 def build_stt(config: AgentConfigModel) -> stt_api.STT:
-    speech_to_text: stt_api.STT = (
+    speech_to_text: stt_api.STT = alert_on_rate_limits(
         RealtimeSTT(model=config.stt_model, language=config.stt_language, mode=config.stt_mode)
         if config.stt_realtime
         else sarvam.STT(model=config.stt_model, mode=config.stt_mode, language=config.stt_language)
@@ -84,7 +85,9 @@ def build_llm(config: AgentConfigModel) -> llm_api.LLM:
     # Capping reply length caps TTS, the largest line item of a call.
     if config.max_response_tokens is not None:
         options["max_tokens"] = config.max_response_tokens
-    language_model: llm_api.LLM = sarvam.LLM(model=config.llm_model, **options)
+    language_model: llm_api.LLM = alert_on_rate_limits(
+        sarvam.LLM(model=config.llm_model, **options)
+    )
     if config.fallback_llm:
         language_model = llm_api.FallbackAdapter(
             [language_model, inference.LLM(model=config.fallback_llm)]
@@ -94,20 +97,22 @@ def build_llm(config: AgentConfigModel) -> llm_api.LLM:
 
 def build_analysis_llm(config: AgentConfigModel) -> llm_api.LLM:
     """The call's own model, deterministic, for the post-call analysis."""
-    return sarvam.LLM(model=config.llm_model, temperature=0.0)
+    return alert_on_rate_limits(sarvam.LLM(model=config.llm_model, temperature=0.0))
 
 
 def build_tts(config: AgentConfigModel) -> tts_api.TTS:
-    text_to_speech: tts_api.TTS = sarvam.TTS(
-        model=config.tts_model,
-        speaker=config.tts_speaker,
-        target_language_code=config.tts_language,
-        pace=config.tts_pace,
-        # Raw PCM at Sarvam's highest streaming rate. The plugin's default MP3 is decoded
-        # and re-encoded (Opus for browsers, G.711 for phones) and the two lossy passes
-        # are audible; PCM also reaches first audio slightly sooner.
-        output_audio_codec="linear16",
-        speech_sample_rate=24000,
+    text_to_speech: tts_api.TTS = alert_on_rate_limits(
+        sarvam.TTS(
+            model=config.tts_model,
+            speaker=config.tts_speaker,
+            target_language_code=config.tts_language,
+            pace=config.tts_pace,
+            # Raw PCM at Sarvam's highest streaming rate. The plugin's default MP3 is decoded
+            # and re-encoded (Opus for browsers, G.711 for phones) and the two lossy passes
+            # are audible; PCM also reaches first audio slightly sooner.
+            output_audio_codec="linear16",
+            speech_sample_rate=24000,
+        )
     )
     if config.fallback_tts:
         fallback_options: dict[str, Any] = {"language": _base_language(config.tts_language)}
