@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppDependencies } from "../../app";
 import { HttpError } from "../../http/errors";
 import { requireScope, type V1Env } from "../../http/v1-auth";
+import { formFile, formText, parseFormBody } from "../../http/validate";
 import {
   businessDetailsSchema,
   KycRequirementsChanged,
@@ -18,19 +19,6 @@ const publicKyc = (org: OrgRow) => ({
   updatedAt: org.numberKycUpdatedAt?.toISOString() ?? null,
 });
 
-type FormBody = Record<string, string | File | (string | File)[]>;
-
-function formFile(body: FormBody, field: string) {
-  const value = body[field];
-  if (!(value instanceof File)) throw new HttpError(400, `${field}: a file is required`);
-  return { fileName: value.name || field, content: value };
-}
-
-function formText(body: FormBody, field: string): string | undefined {
-  const value = body[field];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
 /**
  * Mounted under /v1/orgs/:externalId/number-kyc. PUT is multipart: the business details
  * as fields, `registrationCertificate` and `gstCertificate` as files (PDF, JPEG or PNG,
@@ -42,12 +30,7 @@ export function numberKycRoutes({ db, numbers, now }: AppDependencies) {
     .put("/", requireScope("orgs:write"), async (c) => {
       const services = requireNumberServices(numbers);
       const org = c.get("org");
-      let body: FormBody;
-      try {
-        body = await c.req.parseBody();
-      } catch {
-        throw new HttpError(400, "body must be multipart/form-data");
-      }
+      const body = await parseFormBody(c);
       const business = businessDetailsSchema.safeParse({
         legalName: formText(body, "legalName"),
         gstin: formText(body, "gstin"),

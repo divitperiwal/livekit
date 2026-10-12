@@ -264,3 +264,74 @@ describe("Plivo client", () => {
     });
   });
 });
+
+const complaint = (referenceId: string) => ({
+  reference_id: referenceId,
+  status: "pending",
+  from_number: "918045001234",
+  to_number: "+919876543210",
+  initiation_date: "2026-10-03",
+  complaint_category: "unsolicited commercial communication",
+  call_uuid: "",
+  opt_in_proof: null,
+  rejection_reason: null,
+  created_at: "2026-10-04T05:00:00Z",
+  updated_at: "2026-10-04T05:00:00Z",
+});
+
+describe("Plivo client: UCC complaints", () => {
+  test("pages through complaints reported since a time and returns them in E.164", async () => {
+    const { plivo, requests } = plivoAnswering((request) => {
+      const offset = Number(new URL(request.url).searchParams.get("offset"));
+      const objects =
+        offset === 0
+          ? Array.from({ length: 20 }, (_, index) => complaint(`PUCC-2026-${index}`))
+          : [complaint("PUCC-2026-20")];
+      return Response.json({ meta: { next: offset === 0 ? "/next" : null }, objects });
+    });
+    const found = await plivo.uccComplaints(new Date("2026-08-20T00:00:00Z"));
+
+    expect(found).toHaveLength(21);
+    expect(found[0]).toEqual({
+      referenceId: "PUCC-2026-0",
+      status: "pending",
+      fromNumber: "+918045001234",
+      complainantNumber: "+919876543210",
+      calledOn: "2026-10-03",
+      category: "unsolicited commercial communication",
+      callUuid: null,
+      rejectionReason: null,
+      reportedAt: new Date("2026-10-04T05:00:00Z"),
+      updatedAt: new Date("2026-10-04T05:00:00Z"),
+    });
+    const first = new URL(requests[0]!.url);
+    expect(first.href.startsWith(`${accountUrl}Ucc/`)).toBe(true);
+    expect(first.searchParams.get("created_at__gte")).toBe("2026-08-20 00:00:00");
+    expect(new URL(requests[1]!.url).searchParams.get("offset")).toBe("20");
+  });
+
+  test("uploads opt-in proof as the multipart field `file`", async () => {
+    const { plivo, requests } = plivoAnswering(() =>
+      Response.json({ status: "in_review", reference_id: "PUCC-2026-1" }, { status: 201 }),
+    );
+    await plivo.submitUccProof("PUCC-2026-1", {
+      fileName: "consent.pdf",
+      content: new Blob(["%PDF-1"], { type: "application/pdf" }),
+    });
+    expect(requests[0]!.method).toBe("POST");
+    expect(requests[0]!.url).toBe(`${accountUrl}Ucc/PUCC-2026-1/`);
+    const form = await requests[0]!.formData();
+    expect((form.get("file") as File).name).toBe("consent.pdf");
+  });
+
+  test("a refused upload is a PlivoError with Plivo's message", async () => {
+    const { plivo } = plivoAnswering(() =>
+      Response.json({ error: "complaint is in_review" }, { status: 400 }),
+    );
+    const upload = plivo.submitUccProof("PUCC-2026-1", {
+      fileName: "consent.pdf",
+      content: new Blob(["%PDF-1"]),
+    });
+    await expect(upload).rejects.toThrow(PlivoError);
+  });
+});

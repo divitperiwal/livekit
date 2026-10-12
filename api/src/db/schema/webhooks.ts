@@ -22,6 +22,7 @@ export const webhookEvent = pgEnum("webhook_event", [
   "number.released",
   "number.rent_charged",
   "number_kyc.updated",
+  "ucc_complaint.updated",
 ]);
 
 /** The account bills its businesses from these: retried until delivered, never marked failed. */

@@ -5,8 +5,11 @@ import {
   type KycDocumentType,
   type KycState,
   type Plivo,
+  type PlivoFile,
   type PlivoKycStatus,
   type PurchaseOutcome,
+  type UccComplaint,
+  type UccComplaintStatus,
 } from "../../src/modules/numbers/plivo";
 
 /** Plivo's two India business documents, as its Requirements lookup lists them. */
@@ -26,12 +29,15 @@ type PlivoMethod = keyof Plivo;
 /**
  * An in-memory Plivo that keeps Plivo's rules: a number is bought once, only under an
  * accepted application; releasing a number not held succeeds; only a rejected
- * application can be resubmitted. `failNext` makes the next call to a method throw.
+ * application can be resubmitted; proof goes only to a pending or rejected complaint.
+ * `failNext` makes the next call to a method throw.
  */
 export class FakePlivo implements Plivo {
   readonly offered = new Map<string, AvailableNumber>();
   readonly held = new Map<string, HeldNumber>();
   readonly applications = new Map<string, Application>();
+  readonly complaints = new Map<string, UccComplaint>();
+  readonly proofs = new Map<string, PlivoFile>();
   readonly calls: PlivoMethod[] = [];
   purchaseOutcome: PurchaseOutcome = "active";
   readonly #failures = new Map<PlivoMethod, PlivoError>();
@@ -67,6 +73,34 @@ export class FakePlivo implements Plivo {
   /** What Plivo decides about an application (its callback then tells us). */
   decideKyc(applicationId: string, status: PlivoKycStatus, rejectionReason: string | null = null) {
     this.#application(applicationId).state = { status, rejectionReason };
+  }
+
+  /** A complaint the regulator passed on; its fields default to a call from ORG_NUMBER on 3 Oct 2026. */
+  fileComplaint(complaint: Partial<UccComplaint> & { referenceId: string }): this {
+    this.complaints.set(complaint.referenceId, {
+      status: "pending",
+      fromNumber: "+918045001234",
+      complainantNumber: "+919876543210",
+      calledOn: "2026-10-03",
+      category: "unsolicited commercial communication",
+      callUuid: null,
+      rejectionReason: null,
+      reportedAt: new Date("2026-10-04T05:00:00Z"),
+      updatedAt: new Date("2026-10-04T05:00:00Z"),
+      ...complaint,
+    });
+    return this;
+  }
+
+  /** What Plivo decides about a complaint's proof. */
+  decideComplaint(
+    referenceId: string,
+    status: UccComplaintStatus,
+    rejectionReason: string | null = null,
+    at = new Date("2026-10-06T05:00:00Z"),
+  ) {
+    const complaint = this.#complaint(referenceId);
+    Object.assign(complaint, { status, rejectionReason, updatedAt: at });
   }
 
   async searchNumbers(search: Parameters<Plivo["searchNumbers"]>[0]) {
@@ -150,6 +184,24 @@ export class FakePlivo implements Plivo {
     for (const e164 of e164s) this.held.get(e164)!.complianceApplicationId = applicationId;
   }
 
+  async uccComplaints(reportedSince: Date) {
+    this.#enter("uccComplaints");
+    return [...this.complaints.values()]
+      .filter((complaint) => complaint.reportedAt >= reportedSince)
+      .sort((a, b) => b.reportedAt.getTime() - a.reportedAt.getTime())
+      .map((complaint) => ({ ...complaint }));
+  }
+
+  async submitUccProof(referenceId: string, file: PlivoFile) {
+    this.#enter("submitUccProof");
+    const complaint = this.#complaint(referenceId);
+    if (complaint.status !== "pending" && complaint.status !== "rejected") {
+      throw new PlivoError(400, `complaint is ${complaint.status}`);
+    }
+    this.proofs.set(referenceId, file);
+    Object.assign(complaint, { status: "in_review", rejectionReason: null });
+  }
+
   /** A number we bought by hand in Plivo's console, before it is assigned to anyone. */
   holdManaged(e164: string): this {
     this.held.set(e164, { complianceApplicationId: null, inboundTrunkId: "trunk-in" });
@@ -162,6 +214,12 @@ export class FakePlivo implements Plivo {
     if (!failure) return;
     this.#failures.delete(method);
     throw failure;
+  }
+
+  #complaint(referenceId: string): UccComplaint {
+    const found = this.complaints.get(referenceId);
+    if (!found) throw new PlivoError(404, "complaint not found");
+    return found;
   }
 
   #application(applicationId: string): Application {

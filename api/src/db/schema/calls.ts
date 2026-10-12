@@ -3,6 +3,7 @@ import {
   bigserial,
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -227,10 +228,12 @@ export const callEvents = pgTable(
   ],
 );
 
+/** `complaint`: the number's owner complained to the regulator; calling it again is itself a violation. */
 export const suppressionSource = pgEnum("suppression_source", [
   "caller_request",
   "api",
   "operator",
+  "complaint",
 ]);
 
 /** Do-not-call list per org. Survives erasure of the call that added it. */
@@ -249,4 +252,40 @@ export const suppressedNumbers = pgTable(
     createdAt: createdAt(),
   },
   (t) => [unique("suppressed_numbers_org_e164_key").on(t.orgId, t.e164)],
+);
+
+/** Plivo's words. `in_review`: opt-in proof was uploaded and awaits Plivo's decision. */
+export const uccComplaintStatus = pgEnum("ucc_complaint_status", [
+  "pending",
+  "in_review",
+  "accepted",
+  "rejected",
+]);
+
+/**
+ * A recipient's unsolicited-call (UCC) complaint, read from Plivo. Plivo wants opt-in
+ * proof within 5 business days; unresolved complaints suspend the org's number KYC.
+ * The org is the one holding `from_number` on the day of the call; null when none did.
+ */
+export const uccComplaints = pgTable(
+  "ucc_complaints",
+  {
+    id: id(),
+    /** Plivo's PUCC-YYYY-NNNNNNNNN */
+    referenceId: text("reference_id").notNull().unique(),
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "restrict" }),
+    fromNumber: text("from_number").notNull(),
+    complainantNumber: text("complainant_number").notNull(),
+    calledOn: date("called_on", { mode: "string" }).notNull(),
+    category: text("category"),
+    plivoCallUuid: text("plivo_call_uuid"),
+    status: uccComplaintStatus("status").notNull(),
+    rejectionReason: text("rejection_reason"),
+    proofSubmittedAt: at("proof_submitted_at"),
+    reportedAt: at("reported_at").notNull(),
+    plivoUpdatedAt: at("plivo_updated_at").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("ucc_complaints_org_idx").on(t.orgId, t.reportedAt)],
 );

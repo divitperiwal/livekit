@@ -3,8 +3,10 @@ import { errorMessage } from "../../error-message";
 
 export const PLIVO_API_BASE = "https://api.plivo.com/v1";
 export const PLIVO_TIMEOUT_MS = 10_000;
-/** A KYC submission carries two documents of up to 5 MB each. */
+/** A KYC submission carries two documents of up to 5 MB each; opt-in proof one of up to 10 MB. */
 export const PLIVO_UPLOAD_TIMEOUT_MS = 60_000;
+/** Plivo's page size for complaints. */
+const UCC_PAGE_SIZE = 20;
 /** Plivo's Compliance API covers India only, and we rent only Indian numbers. */
 const COUNTRY_ISO = "IN";
 
@@ -49,7 +51,7 @@ export type KycDocumentType = {
   requiredFields: { fieldName: string; required: boolean }[];
 };
 
-export type KycFile = { fileName: string; content: Blob };
+export type PlivoFile = { fileName: string; content: Blob };
 
 export type KycApplication = {
   /** Shown in Plivo's console; we use the org's id so a person can find it there. */
@@ -65,7 +67,27 @@ export type KycApplication = {
     state: string;
     postalCode: string;
   };
-  documents: { documentTypeId: string; dataFields: Record<string, string>; file: KycFile }[];
+  documents: { documentTypeId: string; dataFields: Record<string, string>; file: PlivoFile }[];
+};
+
+export const uccComplaintStatuses = ["pending", "in_review", "accepted", "rejected"] as const;
+export type UccComplaintStatus = (typeof uccComplaintStatuses)[number];
+
+/** A recipient's unsolicited-call (UCC) complaint about a call from one of our numbers. */
+export type UccComplaint = {
+  /** PUCC-YYYY-NNNNNNNNN */
+  referenceId: string;
+  status: UccComplaintStatus;
+  /** Our number that placed the call. */
+  fromNumber: string;
+  complainantNumber: string;
+  /** The day of the call, YYYY-MM-DD. */
+  calledOn: string;
+  category: string | null;
+  callUuid: string | null;
+  rejectionReason: string | null;
+  reportedAt: Date;
+  updatedAt: Date;
 };
 
 /** Everything voiceAi asks of Plivo. Tests use `test/fixtures/fake-plivo.ts`. */
@@ -86,6 +108,10 @@ export type Plivo = {
   kycState(applicationId: string): Promise<KycState>;
   /** Puts numbers we hold under an accepted application: a managed number given to a business, or its numbers after a new application. */
   linkNumbers(applicationId: string, e164s: string[]): Promise<void>;
+  /** Every complaint against our account reported since then, newest first. */
+  uccComplaints(reportedSince: Date): Promise<UccComplaint[]>;
+  /** Opt-in proof for a pending or rejected complaint (PDF, PNG or JPEG, 10 MB); it moves to in_review. */
+  submitUccProof(referenceId: string, file: PlivoFile): Promise<void>;
 };
 
 export class PlivoError extends Error {
@@ -133,6 +159,26 @@ const linkResponseSchema = z.object({
   report: z.array(
     z.object({ number: z.string(), status: z.string(), remarks: z.string().nullish() }),
   ),
+});
+/** ISO 8601 in Plivo's documentation; read leniently, since a parse failure stops the poll. */
+const plivoTimestamp = z.string().refine((value) => !Number.isNaN(Date.parse(value)), {
+  message: "not a timestamp",
+});
+const uccComplaintSchema = z.object({
+  reference_id: z.string(),
+  status: z.enum(uccComplaintStatuses),
+  from_number: z.string(),
+  to_number: z.string(),
+  initiation_date: z.string().regex(/^\d{4}-\d{2}-\d{2}/, "not a date"),
+  complaint_category: z.string().nullish(),
+  call_uuid: z.string().nullish(),
+  rejection_reason: z.string().nullish(),
+  created_at: plivoTimestamp,
+  updated_at: plivoTimestamp,
+});
+const uccPageSchema = z.object({
+  meta: z.object({ next: z.string().nullish() }),
+  objects: z.array(uccComplaintSchema),
 });
 const errorBodySchema = z.object({ error: z.unknown() });
 
@@ -269,7 +315,61 @@ export function plivoClient(
         throw new PlivoError(null, `could not link ${reasons.join("; ")}`);
       }
     },
+
+    async uccComplaints(reportedSince) {
+      const complaints: UccComplaint[] = [];
+      for (let offset = 0; ; offset += UCC_PAGE_SIZE) {
+        const { body } = await sendExpecting(send, [200], {
+          method: "GET",
+          path: "Ucc/",
+          query: {
+            created_at__gte: plivoDateTime(reportedSince),
+            limit: UCC_PAGE_SIZE,
+            offset,
+          },
+        });
+        const page = uccPageSchema.parse(body);
+        complaints.push(...page.objects.map(toUccComplaint));
+        if (!page.meta.next || page.objects.length < UCC_PAGE_SIZE) return complaints;
+      }
+    },
+
+    async submitUccProof(referenceId, file) {
+      const form = new FormData();
+      form.append("file", file.content, file.fileName);
+      await sendExpecting(send, [200, 201], {
+        method: "POST",
+        path: `Ucc/${encodeURIComponent(referenceId)}/`,
+        form,
+        timeoutMs: PLIVO_UPLOAD_TIMEOUT_MS,
+      });
+    },
   };
+}
+
+function toUccComplaint(complaint: z.output<typeof uccComplaintSchema>): UccComplaint {
+  return {
+    referenceId: complaint.reference_id,
+    status: complaint.status,
+    fromNumber: e164(complaint.from_number),
+    complainantNumber: e164(complaint.to_number),
+    calledOn: complaint.initiation_date.slice(0, 10),
+    category: complaint.complaint_category ?? null,
+    callUuid: complaint.call_uuid || null,
+    rejectionReason: complaint.rejection_reason || null,
+    reportedAt: new Date(complaint.created_at),
+    updatedAt: new Date(complaint.updated_at),
+  };
+}
+
+/** Plivo's filters take "YYYY-MM-DD HH:MM:ss" in UTC. */
+function plivoDateTime(at: Date): string {
+  return at.toISOString().slice(0, 19).replace("T", " ");
+}
+
+/** Plivo writes numbers with or without the leading "+". */
+function e164(number: string): string {
+  return number.startsWith("+") ? number : `+${number}`;
 }
 
 /** Plivo names numbers by their digits, without the leading "+". */

@@ -8,6 +8,7 @@ import { v1CallRoutes } from "./calls";
 import { numberKycRoutes } from "./number-kyc";
 import { numberRoutes } from "./numbers";
 import { orgRoutes } from "./orgs";
+import { uccComplaintRoutes } from "./ucc-complaints";
 
 /** The public API: an API key on every request; everything under an org is scoped to the key's account. */
 export function v1Routes(dependencies: AppDependencies) {
@@ -23,5 +24,6 @@ export function v1Routes(dependencies: AppDependencies) {
   routes.route("/orgs/:externalId/numbers", numberRoutes(dependencies));
   routes.route("/orgs/:externalId/number-kyc", numberKycRoutes(dependencies));
   routes.route("/orgs/:externalId/calls", v1CallRoutes(dependencies));
+  routes.route("/orgs/:externalId/ucc-complaints", uccComplaintRoutes(dependencies));
   return routes;
 }

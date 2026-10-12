@@ -7,7 +7,7 @@ import { enqueueWebhook } from "../webhooks/enqueue";
 import type {
   KycApplication,
   KycDocumentType,
-  KycFile,
+  PlivoFile,
   Plivo,
   PlivoKycStatus,
   PlivoNumberType,
@@ -31,7 +31,7 @@ export const businessDetailsSchema = z.strictObject({
 export type BusinessDetails = z.infer<typeof businessDetailsSchema>;
 
 /** A Certificate of Incorporation (or Udyam) and a GST certificate (Form GST REG-06). */
-export type KycDocuments = { registrationCertificate: KycFile; gstCertificate: KycFile };
+export type KycDocuments = { registrationCertificate: PlivoFile; gstCertificate: PlivoFile };
 
 export type NumberKycStatus = (typeof numberKycStatus.enumValues)[number];
 export type NumberKycDependencies = {

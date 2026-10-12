@@ -1,9 +1,10 @@
 {$API_DOMAIN} {
-	# KYC uploads carry two documents of up to 5 MB each; every other body stays small.
-	# The two matchers exclude each other, so their order does not matter.
-	@kycUpload path_regexp ^/v1/orgs/[^/]+/number-kyc$
-	@otherRequests not path_regexp ^/v1/orgs/[^/]+/number-kyc$
-	request_body @kycUpload {
+	# Uploads: KYC carries two documents of up to 5 MB each, complaint proof one of up to
+	# 10 MB; every other body stays small. The two matchers exclude each other, so their
+	# order does not matter.
+	@upload path_regexp ^/v1/orgs/[^/]+/(number-kyc|ucc-complaints/[^/]+/proof)$
+	@otherRequests not path_regexp ^/v1/orgs/[^/]+/(number-kyc|ucc-complaints/[^/]+/proof)$
+	request_body @upload {
 		max_size 12MB
 	}
 	request_body @otherRequests {

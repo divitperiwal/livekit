@@ -1,4 +1,5 @@
 import type { Database } from "../db/database";
+import { errorMessage } from "../error-message";
 import {
   deleteExpiredRecordings,
   type RecordingDeleter,
@@ -9,6 +10,7 @@ import { pollNumberKyc } from "../modules/numbers/number-kyc";
 import type { Plivo } from "../modules/numbers/plivo";
 import { retryPendingReleases } from "../modules/numbers/release-number";
 import { undoAbandonedRents } from "../modules/numbers/rent-number";
+import { syncUccComplaints } from "../modules/numbers/ucc-complaints";
 import type { SecretBox } from "../modules/secrets/secret-box";
 import {
   BILLING_UNDELIVERED_ALERT_MS,
@@ -122,7 +124,7 @@ export function backgroundJobs(deps: JobDependencies): Job[] {
   ];
 }
 
-/** Rent, releases, half-done rents and KYC: everything that talks to Plivo. */
+/** Rent, releases, half-done rents, KYC and complaints: everything that talks to Plivo. */
 export function numberJobs(
   deps: { db: Database; plivo: Plivo; now: () => Date },
   log: (line: string) => void,
@@ -173,6 +175,29 @@ export function numberJobs(
       name: "kyc-poll-accepted",
       everyMs: 6 * 60 * MINUTE,
       run: async () => logKycPoll(await pollNumberKyc(deps, ["accepted"]), log),
+    },
+    {
+      name: "ucc-complaints",
+      everyMs: 5 * MINUTE,
+      run: async () => {
+        let result;
+        try {
+          result = await syncUccComplaints(deps);
+        } catch (error) {
+          log(
+            `ALERT ucc-poll-failed: could not read complaints from Plivo: ${errorMessage(error)}`,
+          );
+          return;
+        }
+        if (result.created + result.changed > 0) {
+          log(`ucc: ${result.created} new complaint(s), ${result.changed} changed`);
+        }
+        if (result.unmatched.length > 0) {
+          log(
+            `ALERT ucc-complaint-unmatched: no org held the calling number for ${result.unmatched.join(", ")}`,
+          );
+        }
+      },
     },
   ];
 }

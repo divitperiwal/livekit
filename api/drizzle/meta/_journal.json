@@ -50,6 +50,13 @@
       "when": 1791682894287,
       "tag": "0006_rent_request_key",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791822147027,
+      "tag": "0007_ucc_complaints",
+      "breakpoints": true
     }
   ]
 }

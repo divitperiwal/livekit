@@ -228,6 +228,7 @@ describe("the background process", () => {
       "abandoned-rents",
       "kyc-poll-pending",
       "kyc-poll-accepted",
+      "ucc-complaints",
     ]);
   });
 
