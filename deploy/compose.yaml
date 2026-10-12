@@ -121,7 +121,8 @@ services:
       dockerfile: api/Dockerfile
     stop_grace_period: 30s
     environment:
-      <<: *livekit
+      # Recording storage signs the download links /v1 hands out.
+      <<: [*livekit, *recording-storage]
       NODE_ENV: production
       DATABASE_URL: *database-url
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?}

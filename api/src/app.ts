@@ -4,6 +4,7 @@ import type { Database } from "./db/database";
 import { handleError, handleNotFound } from "./http/errors";
 import type { CallDispatcher } from "./livekit";
 import type { BalanceChecker } from "./modules/billing/balance-check";
+import type { RecordingLinker } from "./modules/calls/recording-link";
 import type { NumberServices } from "./modules/numbers/number-services";
 import type { SecretBox } from "./modules/secrets/secret-box";
 import { internalRoutes } from "./routes/internal";
@@ -19,6 +20,8 @@ export type AppDependencies = {
   dispatcher: CallDispatcher | null;
   /** Null when Plivo is not configured: renting, releasing and KYC answer 503. */
   numbers: NumberServices | null;
+  /** Null when recording storage is not configured: recording links answer 503. */
+  recordingLinker: RecordingLinker | null;
   roomPrefix: string;
   /** Requests per API key per minute. */
   ratePerMinute: number;

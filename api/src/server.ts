@@ -6,6 +6,7 @@ import { BalanceChecker } from "./modules/billing/balance-check";
 import type { NumberServices } from "./modules/numbers/number-services";
 import { plivoClient } from "./modules/numbers/plivo";
 import { SecretBox } from "./modules/secrets/secret-box";
+import { s3RecordingLinker } from "./storage";
 
 function loadConfigOrExit() {
   try {
@@ -52,6 +53,33 @@ function numberServices(): NumberServices | null {
   };
 }
 
+function recordingLinker() {
+  const {
+    RECORDING_S3_BUCKET,
+    RECORDING_S3_REGION,
+    RECORDING_S3_ENDPOINT,
+    RECORDING_S3_ACCESS_KEY,
+    RECORDING_S3_SECRET_KEY,
+  } = config;
+  if (
+    !RECORDING_S3_BUCKET ||
+    !RECORDING_S3_REGION ||
+    !RECORDING_S3_ENDPOINT ||
+    !RECORDING_S3_ACCESS_KEY ||
+    !RECORDING_S3_SECRET_KEY
+  ) {
+    console.warn("recording links are off: set the five RECORDING_S3_* variables");
+    return null;
+  }
+  return s3RecordingLinker({
+    RECORDING_S3_BUCKET,
+    RECORDING_S3_REGION,
+    RECORDING_S3_ENDPOINT,
+    RECORDING_S3_ACCESS_KEY,
+    RECORDING_S3_SECRET_KEY,
+  });
+}
+
 const database = connectDatabase(config.DATABASE_URL);
 const app = createApp({
   db: database.db,
@@ -60,6 +88,7 @@ const app = createApp({
   secretBox: new SecretBox(config.SECRETS_KEY),
   dispatcher,
   numbers: numberServices(),
+  recordingLinker: recordingLinker(),
   roomPrefix: config.TELEPHONY_ROOM_PREFIX,
   ratePerMinute: config.PUBLIC_API_RATE_PER_MIN,
 });

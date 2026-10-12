@@ -23,6 +23,14 @@ const NUMBER_VARIABLES = [
   "PUBLIC_BASE_URL",
 ] as const;
 
+const RECORDING_STORAGE_VARIABLES = [
+  "RECORDING_S3_BUCKET",
+  "RECORDING_S3_REGION",
+  "RECORDING_S3_ENDPOINT",
+  "RECORDING_S3_ACCESS_KEY",
+  "RECORDING_S3_SECRET_KEY",
+] as const;
+
 /** A group of variables that must be set together or not at all. */
 function requireTogether(
   names: readonly string[],
@@ -59,10 +67,18 @@ const configSchema = z
     PLIVO_INBOUND_TRUNK_ID: z.string().min(1).optional(),
     /** Where Plivo reaches this api from outside, e.g. https://voice.example.com. */
     PUBLIC_BASE_URL: z.url({ protocol: /^https$/ }).optional(),
+    /** Signed links to call recordings. All five, or none (recording links answer 503). */
+    RECORDING_S3_BUCKET: z.string().min(1).optional(),
+    RECORDING_S3_REGION: z.string().min(1).optional(),
+    RECORDING_S3_ENDPOINT: z.url().optional(),
+    /** Needs read access only. */
+    RECORDING_S3_ACCESS_KEY: z.string().min(1).optional(),
+    RECORDING_S3_SECRET_KEY: z.string().min(1).optional(),
   })
   .superRefine((config, context) => {
     requireTogether(OUTBOUND_VARIABLES, config, context);
     requireTogether(NUMBER_VARIABLES, config, context);
+    requireTogether(RECORDING_STORAGE_VARIABLES, config, context);
   });
 
 /** The ops CLI touches only the database. */

@@ -2,6 +2,7 @@ import { createApp } from "../../src/app";
 import { INTERNAL_SECRET_HEADER } from "../../src/contracts/internal";
 import type { CallDispatcher } from "../../src/livekit";
 import { BalanceChecker } from "../../src/modules/billing/balance-check";
+import type { RecordingLinker } from "../../src/modules/calls/recording-link";
 import type { NumberServices } from "../../src/modules/numbers/number-services";
 import { createTestDatabase } from "../db/test-database";
 import { FakePlivo } from "../fixtures/fake-plivo";
@@ -20,7 +21,13 @@ type TestAppOptions = {
   ratePerMinute?: number;
   /** Default: a fake Plivo. Null: renting and KYC not configured. */
   plivo?: FakePlivo | null;
+  /** Default: links to TEST_RECORDINGS_URL. Null: recording storage not configured. */
+  recordingLinker?: RecordingLinker | null;
 };
+
+export const TEST_RECORDINGS_URL = "https://recordings.example";
+const fakeRecordingLinker: RecordingLinker = (key, expiresInSeconds) =>
+  `${TEST_RECORDINGS_URL}/${key}?expires-in=${expiresInSeconds}`;
 
 export const TEST_INBOUND_TRUNK = "trunk-in-test";
 export const TEST_PUBLIC_BASE_URL = "https://voice.example";
@@ -56,6 +63,8 @@ export async function createTestApp(options: TestAppOptions = {}) {
     secretBox: testSecretBox,
     dispatcher: options.dispatcher === undefined ? recordingDispatcher : options.dispatcher,
     numbers,
+    recordingLinker:
+      options.recordingLinker === undefined ? fakeRecordingLinker : options.recordingLinker,
     roomPrefix: "call",
     ratePerMinute: options.ratePerMinute ?? 1_000,
     random: options.random,

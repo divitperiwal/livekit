@@ -6,6 +6,7 @@ import { requireScope, type V1Env } from "../../http/v1-auth";
 import { parseJsonBody, parseQuery } from "../../http/validate";
 import { placeCall, placeCallInputSchema } from "../../modules/calls/place-call";
 import { getCall, listCalls } from "../../modules/calls/read-calls";
+import { recordingLink } from "../../modules/calls/recording-link";
 
 const listSchema = z.object({
   before: z.string().optional(),
@@ -48,5 +49,18 @@ export function v1CallRoutes(dependencies: AppDependencies) {
       const call = await getCall(db, c.get("org"), c.req.param("callId"));
       if (!call) throw new HttpError(404, "call not found");
       return c.json(call);
+    })
+    .get("/:callId/recording", requireScope("calls:read"), async (c) => {
+      const linker = dependencies.recordingLinker;
+      if (!linker) throw new HttpError(503, "recordings are not configured");
+      const outcome = await recordingLink(db, c.get("org"), c.req.param("callId"), {
+        linker,
+        now: dependencies.now?.() ?? new Date(),
+      });
+      if (outcome.kind === "no_call") throw new HttpError(404, "call not found");
+      if (outcome.kind === "no_recording") {
+        throw new HttpError(404, "this call has no recording, or it has passed retention");
+      }
+      return c.json(outcome.link);
     });
 }
