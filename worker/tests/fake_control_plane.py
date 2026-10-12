@@ -48,6 +48,8 @@ class FakeControlPlane:
     resolve_status: int = 200
     resolve_body: dict[str, Any] = field(default_factory=lambda: dict(RESOLVED_AGENT))
     write_status: int = 200
+    # The next this many writes are answered 503, as while the API restarts.
+    unavailable_for: int = 0
     received: list[Received] = field(default_factory=list)
     url: str = ""
 
@@ -112,6 +114,9 @@ class FakeControlPlane:
             model.model_validate(received.body, by_alias=True, by_name=False)
         except ValidationError as error:
             return web.json_response({"error": json.loads(error.json())}, status=422)
+        if self.unavailable_for > 0:
+            self.unavailable_for -= 1
+            return web.json_response({"error": "restarting"}, status=503)
         if self.write_status != 200:
             return web.json_response({"error": "unavailable"}, status=self.write_status)
         return web.json_response(answer(received.body))

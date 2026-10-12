@@ -1,6 +1,7 @@
 import pytest
 from fake_control_plane import SECRET
 
+from automitra_worker.control_plane import client as client_module
 from automitra_worker.control_plane.client import (
     CallRefused,
     ControlPlaneClient,
@@ -17,6 +18,13 @@ OPEN_CALL = OpenCallRequest(
     lk_job_id="job-1",
     direction="inbound",
 )
+FINALIZE = FinalizeCallRequest(status="completed", duration_seconds=5)
+
+
+@pytest.fixture(autouse=True)
+def no_waiting_between_retries(monkeypatch):
+    monkeypatch.setattr(client_module, "OPEN_RETRY_DELAYS_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(client_module, "FINALIZE_RETRY_DELAYS_SECONDS", (0.0,) * 5)
 
 
 @pytest.fixture
@@ -84,12 +92,37 @@ async def test_write_failures_are_swallowed_not_raised(fake_api, client):
         CallEvent(seq=1, type="user_message", role="user", content="hi", at="2026-10-04T00:00:00Z")
     ]
     assert await client.append_events("call-1", "org-kbs", events) is None
-    assert (
-        await client.finalize_call(
-            "call-1", FinalizeCallRequest(status="completed", duration_seconds=5)
-        )
-        is None
-    )
+    assert await client.finalize_call("call-1", FINALIZE) is None
+
+
+async def test_finalize_is_retried_until_a_restarting_api_answers(fake_api, client):
+    fake_api.unavailable_for = 3
+    finalized = await client.finalize_call("call-1", FINALIZE)
+    assert finalized is not None and finalized.status == "completed"
+    assert len(fake_api.requests_to("/finalize")) == 4
+
+
+async def test_finalize_gives_up_after_its_retries(fake_api, client):
+    fake_api.write_status = 503
+    assert await client.finalize_call("call-1", FINALIZE) is None
+    assert len(fake_api.requests_to("/finalize")) == 6
+
+
+async def test_opening_is_retried_briefly_and_events_are_not(fake_api, client):
+    fake_api.write_status = 503
+    assert await client.open_call(OPEN_CALL) is None
+    assert len(fake_api.requests_to("/internal/calls")) == 3
+    events = [
+        CallEvent(seq=1, type="user_message", role="user", content="hi", at="2026-10-04T00:00:00Z")
+    ]
+    assert await client.append_events("call-1", "org-kbs", events) is None
+    assert len(fake_api.requests_to("/events")) == 1
+
+
+async def test_a_refused_write_is_not_retried(fake_api, client):
+    fake_api.write_status = 409
+    assert await client.finalize_call("call-1", FINALIZE) is None
+    assert len(fake_api.requests_to("/finalize")) == 1
 
 
 async def test_an_unreachable_api_does_not_raise_on_writes():

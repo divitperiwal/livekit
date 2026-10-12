@@ -3,8 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# The recording upload (120 s) and analysis (45 s) run after a call ends, rounded up.
-POST_CALL_SECONDS=180
+# The recording upload (120 s), analysis (45 s) and finalize retries (60 s) run after a
+# call ends, rounded up.
+POST_CALL_SECONDS=240
 
 env_value() {
   grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- | tr -d '\r'

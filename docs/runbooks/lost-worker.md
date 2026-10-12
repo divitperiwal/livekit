@@ -4,4 +4,4 @@
 
 **Check:** worker logs around the call's `lk_room_name` (crash, OOM kill, a deploy that did not wait `stop_grace_period`).
 
-**Fix:** if a deploy caused it, check `stop_grace_period` ≥ `TELEPHONY_MAX_CALL_SECONDS` + 3 min and that workers are deployed one at a time. The call's usage is lost unless the worker reports it; decide case by case whether to bill by hand (`account adjust`).
+**Fix:** if a deploy caused it, check `stop_grace_period` ≥ `TELEPHONY_MAX_CALL_SECONDS` + 4 min and that workers are deployed one at a time. The call's usage is lost unless the worker reports it; decide case by case whether to bill by hand (`account adjust`).

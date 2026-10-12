@@ -232,3 +232,41 @@ async def test_the_post_call_step_analyses_answered_conversations_only(monkeypat
     await spoken._after_session()
     assert analysed == ["Agent: नमस्कार\nCaller: Thar ki price?"]
     assert spoken.report.analysis.analysis.disposition == "interested"
+
+
+async def busy_outbound_call(fake_api) -> tuple[Call, FakeJobContext]:
+    client = await ControlPlaneClient(fake_api.url, SECRET).open()
+    sip = FakeSip(
+        error=SipCallError("unavailable", "busy", status=503, metadata={"sip_status_code": "486"})
+    )
+    call, ctx = await make_call(
+        {"agentId": "a", "placeCall": True, "toNumber": "+919876543210"},
+        {"voicemailDetection": False},
+        sip,
+        client,
+    )
+    await call.run()
+    return call, ctx
+
+
+async def test_the_session_end_hook_finalizes_and_the_shutdown_callback_does_not_repeat_it(
+    fake_api,
+):
+    call, ctx = await busy_outbound_call(fake_api)
+    await call._after_session()
+    assert len(fake_api.requests_to("/finalize")) == 1
+
+    for callback in ctx.shutdown_callbacks:
+        await callback()
+    assert len(fake_api.requests_to("/finalize")) == 1
+
+
+async def test_a_call_ending_while_the_api_restarts_is_still_finalized(fake_api, monkeypatch):
+    from automitra_worker.control_plane import client as client_module
+
+    monkeypatch.setattr(client_module, "FINALIZE_RETRY_DELAYS_SECONDS", (0.0,) * 5)
+    call, _ = await busy_outbound_call(fake_api)
+    fake_api.unavailable_for = 2
+    await call._after_session()
+    assert len(fake_api.requests_to("/finalize")) == 3
+    assert call.report.ended

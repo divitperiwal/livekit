@@ -7,7 +7,9 @@
 
 Recording starts once someone has answered, and the greeting then says so. When the
 session ends, the SDK's session-end hook (minutes, not the seconds a shutdown callback
-gets) uploads the recording and runs the post-call analysis; then the call is finalised.
+gets) uploads the recording, runs the post-call analysis and finalises the call, with
+time to retry while the API restarts. The shutdown callback repeats what the hook did not
+finish.
 
 `resolved` and `client` are None in single-tenant dev mode, which reports nothing.
 """
@@ -96,6 +98,8 @@ class CallReport:
     recorder: CallRecorder | None = None
     recording_key: str | None = None
     analysis: AnalysisResult | None = None
+    # Set once the events are drained and finalize has been sent, landed or not.
+    ended: bool = False
 
     def record(self, row: dict | None) -> None:
         if self.events is not None:
@@ -491,6 +495,10 @@ class Call:
 
     async def _after_session(self) -> None:
         await self._finish_recording()
+        await self._analyse()
+        await self._report_end()
+
+    async def _analyse(self) -> None:
         config = self._config
         if self._resolved is None or not config.analysis_enabled or not self.outcome.answered:
             return
@@ -523,33 +531,38 @@ class Call:
         self.report.events.start()
         logger.info("call record %s", opened.id)
 
+    async def _report_end(self) -> None:
+        if self.report.events is not None:
+            # Drained first, so the call is not marked complete with events in memory.
+            await self.report.events.aclose()
+        if self._client is not None and self.report.call_id is not None:
+            ended_after = self.report.ended_after_seconds
+            await self._client.finalize_call(
+                self.report.call_id,
+                finalize_request(
+                    outcome=self.outcome,
+                    budget=self._cost_control.budget,
+                    close_reason=self.report.close_reason,
+                    duration_seconds=self._cost_control.elapsed()
+                    if ended_after is None
+                    else ended_after,
+                    latency=self._latency.summary(),
+                    usage=self._cost_control.usage,
+                    recording_key=self.report.recording_key,
+                    analysis=self.report.analysis,
+                ),
+            )
+        self.report.ended = True
+
     async def _finish(self) -> None:
         """The last thing that touches the API, so it owns closing the client."""
         _log_cost(self._cost_control)
         try:
             # Normally done in the session-end hook already; this catches a job that
-            # ended without running it.
-            await self._finish_recording()
-            if self.report.events is not None:
-                # Drained first, so the call is not marked complete with events in memory.
-                await self.report.events.aclose()
-            if self._client is not None and self.report.call_id is not None:
-                ended_after = self.report.ended_after_seconds
-                await self._client.finalize_call(
-                    self.report.call_id,
-                    finalize_request(
-                        outcome=self.outcome,
-                        budget=self._cost_control.budget,
-                        close_reason=self.report.close_reason,
-                        duration_seconds=self._cost_control.elapsed()
-                        if ended_after is None
-                        else ended_after,
-                        latency=self._latency.summary(),
-                        usage=self._cost_control.usage,
-                        recording_key=self.report.recording_key,
-                        analysis=self.report.analysis,
-                    ),
-                )
+            # ended without running it, or whose hook was cut short.
+            if not self.report.ended:
+                await self._finish_recording()
+                await self._report_end()
         finally:
             if self._client is not None:
                 await self._client.aclose()

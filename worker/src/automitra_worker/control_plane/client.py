@@ -7,8 +7,14 @@ script. So resolution failing raises, and the call is ended unanswered.
 Writes happen while a call is working. Dropping a call because a transcript could not be
 written turns a reporting problem into an outage, so write failures are logged and
 swallowed. Every write is idempotent, so a later retry can still land what one lost.
+
+Opening and finalizing a call are retried when the failure may pass (no answer, a
+timeout, a 5xx): a call whose record is never opened or closed is never billed, and the
+API restarts for a few seconds on every deploy. Events are not: the buffer flushes again
+in two seconds.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -32,6 +38,10 @@ logger = logging.getLogger("automitra.control_plane")
 # A caller is waiting through resolution: fail fast rather than hold the line silent.
 RESOLVE_TIMEOUT_SECONDS = 3.0
 WRITE_TIMEOUT_SECONDS = 5.0
+# Short: the caller hears silence until the record is open and the greeting starts.
+OPEN_RETRY_DELAYS_SECONDS = (0.5, 1.0)
+# About a minute in all, inside the post-call allowance deploy.sh gives a draining worker.
+FINALIZE_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
 
 
 class ControlPlaneUnavailable(RuntimeError):
@@ -46,9 +56,18 @@ class OutOfCredit(CallRefused):
     """402: the account or org cannot pay. A business refusal, not a fault."""
 
 
+class _WriteRefused(RuntimeError):
+    """The API answered a write with a 4xx: sending it again cannot help."""
+
+
+class _WriteFailed(RuntimeError):
+    """No answer, or a 5xx: the same write may land in a moment."""
+
+
 class ControlPlaneClient:
-    """Owns one HTTP session for the life of a call. The call's last writes run in a
-    shutdown callback after the entrypoint returns, so whoever opens it closes it."""
+    """Owns one HTTP session for the life of a call. The call's last writes run after the
+    entrypoint returns (the session-end hook, then a shutdown callback), so whoever opens
+    it closes it."""
 
     def __init__(
         self, base_url: str, secret: str, session: aiohttp.ClientSession | None = None
@@ -114,7 +133,11 @@ class ControlPlaneClient:
 
     async def open_call(self, request: OpenCallRequest) -> OpenCallResponse | None:
         return await self._write(
-            "/internal/calls", request, OpenCallResponse, purpose="open a call record"
+            "/internal/calls",
+            request,
+            OpenCallResponse,
+            purpose="open a call record",
+            retry_delays=OPEN_RETRY_DELAYS_SECONDS,
         )
 
     async def append_events(
@@ -137,29 +160,48 @@ class ControlPlaneClient:
             request,
             FinalizeCallResponse,
             purpose="finalize a call",
+            retry_delays=FINALIZE_RETRY_DELAYS_SECONDS,
         )
 
     async def _write[Response: BaseModel](
-        self, path: str, request: BaseModel, response_model: type[Response], *, purpose: str
+        self,
+        path: str,
+        request: BaseModel,
+        response_model: type[Response],
+        *,
+        purpose: str,
+        retry_delays: tuple[float, ...] = (),
     ) -> Response | None:
-        try:
-            async with self._require_session().post(
-                f"{self._base_url}{path}",
-                json=request.model_dump(mode="json", by_alias=True),
-                timeout=aiohttp.ClientTimeout(total=WRITE_TIMEOUT_SECONDS),
-            ) as response:
-                if response.status < 300:
-                    return response_model.model_validate(await response.json())
-                logger.warning(
-                    "could not %s: %s returned %s (%s)",
-                    purpose,
-                    path,
-                    response.status,
-                    await _error_detail(response),
-                )
-        except Exception as error:
-            logger.warning("could not %s: %r", purpose, error)
-        return None
+        """None when the write did not land."""
+        delays = iter(retry_delays)
+        while True:
+            try:
+                return await self._post(path, request, response_model)
+            except (_WriteRefused, ValidationError, ControlPlaneUnavailable) as error:
+                logger.warning("could not %s: %s", purpose, error)
+                return None
+            except Exception as error:
+                delay = next(delays, None)
+                if delay is None:
+                    logger.warning("could not %s: %r", purpose, error)
+                    return None
+                logger.warning("could not %s, retrying in %.1f s: %r", purpose, delay, error)
+                await asyncio.sleep(delay)
+
+    async def _post[Response: BaseModel](
+        self, path: str, request: BaseModel, response_model: type[Response]
+    ) -> Response:
+        async with self._require_session().post(
+            f"{self._base_url}{path}",
+            json=request.model_dump(mode="json", by_alias=True),
+            timeout=aiohttp.ClientTimeout(total=WRITE_TIMEOUT_SECONDS),
+        ) as response:
+            if response.status < 300:
+                return response_model.model_validate(await response.json())
+            failure = f"{path} returned {response.status} ({await _error_detail(response)})"
+            if response.status >= 500 or response.status in (408, 429):
+                raise _WriteFailed(failure)
+            raise _WriteRefused(failure)
 
     def _require_session(self) -> aiohttp.ClientSession:
         if self._session is None:
