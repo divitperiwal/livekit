@@ -142,10 +142,38 @@ export type SafeRequest = {
 
 export type SafeResponse = { status: number; body: string };
 
-/** Sends a request to a checked, pinned address. Never follows redirects. */
+/**
+ * Sends a request to a checked, pinned address. Never follows redirects. `timeoutMs` is a
+ * deadline for the whole request, address lookup included, kept by an explicit timer: Bun's
+ * `ClientRequest.setTimeout` never fires against a server that accepts and stays silent.
+ */
 export async function safeRequest(
   request: SafeRequest,
   options: SafePostOptions,
+): Promise<SafeResponse> {
+  let outgoing: http.ClientRequest | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`no answer within ${options.timeoutMs} ms`);
+      outgoing?.destroy(error);
+      reject(error);
+    }, options.timeoutMs);
+  });
+  const sent = sendToCheckedAddress(request, options, (started) => {
+    outgoing = started;
+  });
+  try {
+    return await Promise.race([sent, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function sendToCheckedAddress(
+  request: SafeRequest,
+  options: SafePostOptions,
+  onStarted: (outgoing: http.ClientRequest) => void,
 ): Promise<SafeResponse> {
   const url = new URL(request.url);
   const pinned = await checkedAddress(url, options);
@@ -196,9 +224,7 @@ export async function safeRequest(
         response.on("error", reject);
       },
     );
-    outgoing.setTimeout(options.timeoutMs, () =>
-      outgoing.destroy(new Error(`no answer within ${options.timeoutMs} ms`)),
-    );
+    onStarted(outgoing);
     outgoing.on("error", reject);
     outgoing.end(request.body);
   });
