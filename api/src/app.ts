@@ -7,6 +7,7 @@ import type { BalanceChecker } from "./modules/billing/balance-check";
 import type { RecordingLinker } from "./modules/calls/recording-link";
 import type { NumberServices } from "./modules/numbers/number-services";
 import type { SecretBox } from "./modules/secrets/secret-box";
+import type { ToolSender } from "./modules/tools/call-tool";
 import { internalRoutes } from "./routes/internal";
 import { plivoRoutes } from "./routes/plivo";
 import { v1Routes } from "./routes/v1";
@@ -25,6 +26,8 @@ export type AppDependencies = {
   roomPrefix: string;
   /** Requests per API key per minute. */
   ratePerMinute: number;
+  /** Default: customer tool requests go out through the SSRF guard. */
+  sendToolRequest?: ToolSender;
   /** [0, 1); decides the candidate split. Injected so tests can fix it. */
   random?: () => number;
   now?: () => Date;

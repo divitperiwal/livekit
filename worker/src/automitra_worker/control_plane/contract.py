@@ -7,6 +7,8 @@ these shapes. All keys are camelCase on the wire.
     POST /internal/calls                   OpenCallRequest      -> OpenCallResponse
     POST /internal/calls/{id}/events       AppendEventsRequest  -> AppendEventsResponse
     POST /internal/calls/{id}/finalize     FinalizeCallRequest  -> FinalizeCallResponse
+    POST /internal/calls/{id}/tools        ToolCallRequest      -> ToolCallResponse
+                                           (403, 404, 409, 422 -> ErrorResponse)
 
 Every write is idempotent: opening on `lkJobId`, events on (call id, `seq`), finalize on
 the call id. The worker assigns `seq`, so a retried batch inserts nothing twice.
@@ -67,8 +69,6 @@ class ResolveResponse(_WireModel):
     # What is left to spend, after every account and org check. The call's own budget
     # is capped to it. None when the API places no limit.
     available_inr: float | None = None
-    tools: list[dict[str, Any]] = []
-    knowledge_base_count: int = 0
 
 
 class OpenCallRequest(_WireModel):
@@ -173,6 +173,26 @@ class FinalizeCallResponse(_WireModel):
     status: CallStatus
 
 
+class ToolCallRequest(_WireModel):
+    """The model's arguments for one of the call's `httpTools`, by name. The API checks them
+    against the version the call runs, then calls the business's endpoint. Not idempotent:
+    the business's endpoint may act, so it is never retried. 422: the arguments do not fit
+    the tool, and the error says how, for the model to correct."""
+
+    org_id: str
+    name: str
+    arguments: dict[str, Any] = {}
+
+
+class ToolCallResponse(_WireModel):
+    """`ok` false: the business's system failed or did not answer in time. `output` is its
+    answer (cut short when long) or what went wrong, for the model to read."""
+
+    ok: bool
+    status_code: int | None = None
+    output: str
+
+
 CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     ErrorResponse,
     ResolveResponse,
@@ -182,4 +202,6 @@ CONTRACT_MODELS: tuple[type[BaseModel], ...] = (
     AppendEventsResponse,
     FinalizeCallRequest,
     FinalizeCallResponse,
+    ToolCallRequest,
+    ToolCallResponse,
 )

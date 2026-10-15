@@ -29,6 +29,8 @@ export const accounts = pgTable(
     /** The account's own per-org wallet check. Null = not asked. */
     balanceCheckUrl: text("balance_check_url"),
     balanceCheckSecretCiphertext: text("balance_check_secret_ciphertext"),
+    /** Signs every customer tool request of the account's agents. Set and rotated from the ops CLI. */
+    toolSecretCiphertext: text("tool_secret_ciphertext"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

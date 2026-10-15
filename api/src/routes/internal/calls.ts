@@ -7,16 +7,22 @@ import {
   finalizeCallResponseSchema,
   openCallRequestSchema,
   openCallResponseSchema,
+  toolCallRequestSchema,
+  toolCallResponseSchema,
 } from "../../contracts/internal";
 import { HttpError } from "../../http/errors";
 import { parseJsonBody } from "../../http/validate";
 import { appendEvents } from "../../modules/calls/append-events";
 import { finalizeCall } from "../../modules/calls/finalize-call";
 import { openCall } from "../../modules/calls/open-call";
+import { callTool } from "../../modules/tools/call-tool";
 
 const refusalStatus = { not_found: 404, forbidden: 403, invalid: 400 } as const;
+/** 422: the model's arguments do not fit the tool; the worker hands the reason back to it. */
+const toolRefusalStatus = { not_found: 404, forbidden: 403, invalid: 422, conflict: 409 } as const;
 
-export function callRoutes({ db }: AppDependencies) {
+export function callRoutes(dependencies: AppDependencies) {
+  const { db } = dependencies;
   return new Hono()
     .post("/", async (c) => {
       const outcome = await openCall(db, await parseJsonBody(c, openCallRequestSchema));
@@ -46,5 +52,16 @@ export function callRoutes({ db }: AppDependencies) {
         throw new HttpError(refusalStatus[outcome.kind], outcome.reason);
       }
       return c.json(finalizeCallResponseSchema.parse(outcome.call));
+    })
+    .post("/:id/tools", async (c) => {
+      const outcome = await callTool(
+        dependencies,
+        c.req.param("id"),
+        await parseJsonBody(c, toolCallRequestSchema),
+      );
+      if (outcome.kind !== "called") {
+        throw new HttpError(toolRefusalStatus[outcome.kind], outcome.reason);
+      }
+      return c.json(toolCallResponseSchema.parse(outcome.response));
     });
 }

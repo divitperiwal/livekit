@@ -109,9 +109,6 @@ export async function resolveCall(
       config: version.config,
       recordCalls: org.recordCalls,
       availableInr: credit.availableInr,
-      // Customer tools and knowledge wait for the v1 feature decision.
-      tools: [],
-      knowledgeBaseCount: 0,
     },
   };
 }

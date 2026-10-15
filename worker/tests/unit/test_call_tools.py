@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from livekit.agents.llm import ChatMessage, StopResponse, ToolError
 
-from automitra_worker.agent_config.model import ClosingLine, TransferTarget
+from automitra_worker.agent_config.model import ClosingLine, HttpTool, TransferTarget
 from automitra_worker.agent_config.personas import get_persona
 from automitra_worker.call_tools.end_call import (
     END_CALL_RESULT,
@@ -17,9 +17,12 @@ from automitra_worker.call_tools.end_call import (
     said_something,
     suppress_end_call_reply,
 )
+from automitra_worker.call_tools.http_tools import SYSTEM_UNAVAILABLE, http_tool
 from automitra_worker.call_tools.keypad import KeypadInput, keypad_message
 from automitra_worker.call_tools.silence import SilenceAction, SilenceWatch
 from automitra_worker.call_tools.transfer import TRANSFERRED, transfer_tool
+from automitra_worker.control_plane.client import ControlPlaneUnavailable, ToolArgumentsRefused
+from automitra_worker.control_plane.contract import ToolCallResponse
 from automitra_worker.reporting.call_outcome import CallOutcome
 
 MORNING = ClosingLine(start=5, end=12, text="आपका दिन शुभ हो {{caller_name}} जी।")
@@ -222,3 +225,79 @@ def test_silence_is_checked_on_then_said_goodbye_to():
     watch.caller_spoke()
     assert watch.caller_away() is SilenceAction.CHECK
     assert SilenceWatch(max_checks=0).caller_away() is None
+
+
+ORDER_TOOL = HttpTool.model_validate(
+    {
+        "name": "order_status",
+        "description": "Where an order is.",
+        "method": "POST",
+        "url": "https://erp.example.in/orders",
+        "timeout": 8,
+        "parameters": [
+            {"name": "order_number", "description": "As the caller reads it"},
+            {"name": "animal", "type": "enum", "options": ["pig", "goat"]},
+            {"name": "express", "type": "boolean", "required": False},
+            {"name": "quantity", "type": "number", "required": False},
+            {"name": "breed", "type": "enum", "required": False},
+        ],
+    }
+)
+
+
+def sender(answer=None, error=None):
+    sent = []
+
+    async def send(name, arguments, timeout_seconds):
+        sent.append((name, arguments, timeout_seconds))
+        if error is not None:
+            raise error
+        return answer
+
+    return send, sent
+
+
+def test_a_customer_tool_offers_its_parameters_with_their_types():
+    tool = http_tool(ORDER_TOOL, sender()[0])
+    schema = tool.info.raw_schema
+    assert schema["name"] == "order_status"
+    assert schema["description"].startswith("Where an order is.")
+    assert "tell the caller" in schema["description"]
+    assert schema["parameters"] == {
+        "type": "object",
+        "properties": {
+            "order_number": {"type": "string", "description": "As the caller reads it"},
+            "animal": {"type": "string", "enum": ["pig", "goat"]},
+            "express": {"type": "boolean"},
+            "quantity": {"type": "number"},
+            "breed": {"type": "string"},
+        },
+        "required": ["order_number", "animal"],
+    }
+
+
+async def test_a_customer_tool_returns_the_business_systems_answer_to_the_model():
+    send, sent = sender(ToolCallResponse(ok=True, status_code=200, output="dispatched today"))
+    tool = http_tool(ORDER_TOOL, send)
+    assert await tool({"order_number": "A-17", "animal": "pig"}) == "dispatched today"
+    assert sent == [("order_status", {"order_number": "A-17", "animal": "pig"}, 8.0)]
+
+
+@pytest.mark.parametrize(
+    "send",
+    [
+        sender(ToolCallResponse(ok=False, status_code=500, output="HTTP 500"))[0],
+        sender(ToolCallResponse(ok=False, output="no answer within 8000 ms"))[0],
+        sender(error=ControlPlaneUnavailable("api down"))[0],
+    ],
+)
+async def test_a_failing_customer_tool_is_explained_to_the_caller(send):
+    with pytest.raises(ToolError) as refused:
+        await http_tool(ORDER_TOOL, send)({"order_number": "A-17", "animal": "pig"})
+    assert refused.value.message == SYSTEM_UNAVAILABLE
+
+
+async def test_refused_arguments_tell_the_model_what_to_correct():
+    send, _ = sender(error=ToolArgumentsRefused("animal must be one of pig, goat"))
+    with pytest.raises(ToolError, match="animal must be one of pig, goat"):
+        await http_tool(ORDER_TOOL, send)({"order_number": "A-17", "animal": "cow"})

@@ -19,8 +19,6 @@ describe("GET /internal/resolve", () => {
       config: { ttsSpeaker: "ritu", ttsPace: 1.1 },
       recordCalls: false,
       availableInr: null,
-      tools: [],
-      knowledgeBaseCount: 0,
     });
   });
 

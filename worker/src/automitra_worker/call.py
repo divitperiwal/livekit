@@ -29,6 +29,7 @@ from livekit.agents.voice.amd import AMD
 
 from automitra_worker.agent_config.runtime import RuntimeAgent
 from automitra_worker.call_tools.end_call import Closing, end_call_tool, suppress_end_call_reply
+from automitra_worker.call_tools.http_tools import http_tool
 from automitra_worker.call_tools.keypad import KeypadInput
 from automitra_worker.call_tools.silence import (
     SILENCE_CHECK_INSTRUCTIONS,
@@ -37,8 +38,13 @@ from automitra_worker.call_tools.silence import (
     SilenceWatch,
 )
 from automitra_worker.call_tools.transfer import transfer_tool
-from automitra_worker.control_plane.client import ControlPlaneClient
-from automitra_worker.control_plane.contract import CallDirection, OpenCallRequest
+from automitra_worker.control_plane.client import ControlPlaneClient, ControlPlaneUnavailable
+from automitra_worker.control_plane.contract import (
+    CallDirection,
+    OpenCallRequest,
+    ToolCallRequest,
+    ToolCallResponse,
+)
 from automitra_worker.control_plane.resolution import JobMetadata, ResolvedCall, sip_numbers
 from automitra_worker.cost.call_budget import Stage
 from automitra_worker.cost.call_cost_control import CallCostControl
@@ -245,7 +251,20 @@ class Call:
                     ),
                 )
             )
+        tools += [http_tool(tool, self._send_tool_call) for tool in config.http_tools]
         return tools
+
+    async def _send_tool_call(
+        self, name: str, arguments: dict[str, Any], timeout_seconds: float
+    ) -> ToolCallResponse:
+        """Through the call's record, which names the version and so the tool's endpoint."""
+        if self._client is None or self._resolved is None or self.report.call_id is None:
+            raise ControlPlaneUnavailable("the call has no record to call tools through")
+        return await self._client.call_tool(
+            self.report.call_id,
+            ToolCallRequest(org_id=self._resolved.agent.org_id, name=name, arguments=arguments),
+            timeout_seconds=timeout_seconds,
+        )
 
     # Session events
 

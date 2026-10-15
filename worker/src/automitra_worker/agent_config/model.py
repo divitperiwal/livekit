@@ -30,6 +30,10 @@ from automitra_worker.agent_config.sarvam_catalog import (
 
 E164_PATTERN = r"^\+[1-9][0-9]{6,14}$"
 ANALYSIS_FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+TOOL_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+HTTPS_URL_PATTERN = r"^https://[^\s]+$"
+# The call's own tools; a customer tool may not take their names.
+BUILT_IN_TOOL_NAMES = ("end_call", "transfer_call", "send_dtmf_events")
 
 DEFAULT_DISPOSITIONS = (
     "interested",
@@ -85,6 +89,30 @@ class AnalysisField(_StrictModel):
     type: Literal["string", "number", "boolean", "enum"] = "string"
     description: Description = ""
     options: Annotated[list[Label], Field(max_length=20)] = []
+
+
+class ToolParameter(_StrictModel):
+    """One argument the model fills in. An enum with no options is sent as a string."""
+
+    name: Annotated[str, StringConstraints(pattern=TOOL_NAME_PATTERN)]
+    type: Literal["string", "number", "boolean", "enum"] = "string"
+    description: Description = ""
+    options: Annotated[list[Label], Field(max_length=20)] = []
+    required: bool = True
+
+
+class HttpTool(_StrictModel):
+    """An endpoint of the business's own system the agent may call mid-call, such as a stock
+    check. The API sends it, signed with the account's tool secret: GET puts the arguments
+    in the query string, POST sends them as a JSON body. `timeout` is seconds the caller
+    waits."""
+
+    name: Annotated[str, StringConstraints(pattern=TOOL_NAME_PATTERN)]
+    description: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    method: Literal["GET", "POST"] = "GET"
+    url: Annotated[str, StringConstraints(pattern=HTTPS_URL_PATTERN, max_length=500)]
+    parameters: Annotated[list[ToolParameter], Field(max_length=10)] = []
+    timeout: Annotated[float, Field(ge=1, le=10)] = 5.0
 
 
 class AgentConfigModel(_StrictModel):
@@ -145,6 +173,7 @@ class AgentConfigModel(_StrictModel):
     end_call_enabled: bool = True
     closing_lines: Annotated[list[ClosingLine], Field(max_length=12)] = []
     transfer_targets: Annotated[list[TransferTarget], Field(max_length=10)] = []
+    http_tools: Annotated[list[HttpTool], Field(max_length=10)] = []
 
     # Answering machines, outbound only. An empty voicemail_message has the model
     # compose one.
@@ -208,6 +237,7 @@ class AgentConfigModel(_StrictModel):
                 self._budget_stage_problem(),
                 self._vad_silence_problem(),
                 self._endpointing_problem(),
+                self._tool_name_problem(),
             )
             if problem
         ]
@@ -243,4 +273,17 @@ class AgentConfigModel(_StrictModel):
         min_delay, max_delay = self.effective_endpointing_delays
         if min_delay > max_delay:
             return "endpointingMinDelay must not exceed endpointingMaxDelay"
+        return None
+
+    def _tool_name_problem(self) -> str | None:
+        tool_names = [tool.name for tool in self.http_tools]
+        taken = sorted(set(tool_names) & set(BUILT_IN_TOOL_NAMES))
+        if taken:
+            return f"httpTools may not be named {', '.join(taken)}: the call uses those names"
+        if len(set(tool_names)) != len(tool_names):
+            return "httpTools names must be unique"
+        for tool in self.http_tools:
+            parameter_names = [parameter.name for parameter in tool.parameters]
+            if len(set(parameter_names)) != len(parameter_names):
+                return f"parameter names of httpTools {tool.name!r} must be unique"
         return None

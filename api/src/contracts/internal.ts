@@ -6,6 +6,8 @@
  *   POST /internal/calls                   OpenCallRequest      -> OpenCallResponse
  *   POST /internal/calls/{id}/events       AppendEventsRequest  -> AppendEventsResponse
  *   POST /internal/calls/{id}/finalize     FinalizeCallRequest  -> FinalizeCallResponse
+ *   POST /internal/calls/{id}/tools        ToolCallRequest      -> ToolCallResponse
+ *                                          (403, 404, 409, 422 -> ErrorResponse)
  */
 import { z } from "zod";
 
@@ -47,8 +49,6 @@ export const resolveResponseSchema = z.object({
   config: z.record(z.string(), z.unknown()).default({}),
   recordCalls: z.boolean().default(false),
   availableInr: z.number().nullable().default(null),
-  tools: z.array(z.record(z.string(), z.unknown())).default([]),
-  knowledgeBaseCount: z.number().int().default(0),
 });
 
 export const openCallRequestSchema = z.object({
@@ -134,6 +134,18 @@ export const finalizeCallRequestSchema = z.object({
 
 export const finalizeCallResponseSchema = z.object({ id: z.string(), status: callStatusSchema });
 
+export const toolCallRequestSchema = z.object({
+  orgId: z.string(),
+  name: z.string(),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const toolCallResponseSchema = z.object({
+  ok: z.boolean(),
+  statusCode: z.number().int().nullable().default(null),
+  output: z.string(),
+});
+
 /** Keyed by the `$defs` names in `schema/internal-api.schema.json`. */
 export const internalContract = {
   AppendEventsRequest: appendEventsRequestSchema,
@@ -148,6 +160,8 @@ export const internalContract = {
   OpenCallResponse: openCallResponseSchema,
   QaVerdict: qaVerdictSchema,
   ResolveResponse: resolveResponseSchema,
+  ToolCallRequest: toolCallRequestSchema,
+  ToolCallResponse: toolCallResponseSchema,
   UsageReport: usageReportSchema,
 } as const;
 
@@ -161,3 +175,5 @@ export type FinalizeCallRequest = z.infer<typeof finalizeCallRequestSchema>;
 export type FinalizeCallResponse = z.infer<typeof finalizeCallResponseSchema>;
 export type UsageReport = z.infer<typeof usageReportSchema>;
 export type CallAnalysis = z.infer<typeof callAnalysisSchema>;
+export type ToolCallRequest = z.infer<typeof toolCallRequestSchema>;
+export type ToolCallResponse = z.infer<typeof toolCallResponseSchema>;

@@ -16,6 +16,7 @@ from automitra_worker.control_plane.contract import (
     AppendEventsRequest,
     FinalizeCallRequest,
     OpenCallRequest,
+    ToolCallRequest,
 )
 
 SECRET = "test-internal-secret"
@@ -50,6 +51,10 @@ class FakeControlPlane:
     write_status: int = 200
     # The next this many writes are answered 503, as while the API restarts.
     unavailable_for: int = 0
+    tool_status: int = 200
+    tool_answer: dict[str, Any] = field(
+        default_factory=lambda: {"ok": True, "statusCode": 200, "output": '{"pigs": 42}'}
+    )
     received: list[Received] = field(default_factory=list)
     url: str = ""
 
@@ -63,6 +68,7 @@ class FakeControlPlane:
         app.router.add_post("/internal/calls", self._open_call)
         app.router.add_post("/internal/calls/{call_id}/events", self._append_events)
         app.router.add_post("/internal/calls/{call_id}/finalize", self._finalize)
+        app.router.add_post("/internal/calls/{call_id}/tools", self._call_tool)
         return app
 
     async def _receive(self, request: web.Request) -> Received:
@@ -103,6 +109,20 @@ class FakeControlPlane:
             FinalizeCallRequest,
             lambda body: {"id": request.match_info["call_id"], "status": body["status"]},
         )
+
+    async def _call_tool(self, request: web.Request) -> web.Response:
+        received = await self._receive(request)
+        if received.secret != SECRET:
+            return web.json_response({"error": "bad secret"}, status=401)
+        try:
+            ToolCallRequest.model_validate(received.body, by_alias=True, by_name=False)
+        except ValidationError as error:
+            return web.json_response({"error": json.loads(error.json())}, status=400)
+        if self.tool_status != 200:
+            return web.json_response(
+                {"error": f"refused with {self.tool_status}"}, status=self.tool_status
+            )
+        return web.json_response(self.tool_answer)
 
     async def _write(
         self, request: web.Request, model: type[BaseModel], answer: Any

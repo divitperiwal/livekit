@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fake_control_plane import RESOLVED_AGENT, SECRET
 from fake_job_context import FakeJobContext
+from livekit.agents.llm import ToolError
 from livekit.api.twirp_client import SipCallError
 
 from automitra_worker.call import Call
@@ -111,6 +112,37 @@ async def test_the_call_offers_the_tools_its_config_and_direction_call_for():
     )
     names = {tool.info.name for tool in outbound._assistant.tools}
     assert {"end_call", "transfer_call", "send_dtmf_events"} <= names
+
+
+STOCK_TOOL = {
+    "name": "check_stock",
+    "description": "Animals in stock today.",
+    "url": "https://erp.example.in/stock",
+    "parameters": [{"name": "animal", "type": "enum", "options": ["pig", "goat"]}],
+}
+
+
+async def test_a_customer_tool_is_called_through_the_calls_record(fake_api):
+    client = await ControlPlaneClient(fake_api.url, SECRET).open()
+    call, _ = await make_call({"agentId": "a"}, {"httpTools": [STOCK_TOOL]}, FakeSip(), client)
+    tool = next(tool for tool in call._assistant.tools if tool.info.name == "check_stock")
+    call.report.call_id = "call-1"
+
+    assert await tool({"animal": "pig"}) == '{"pigs": 42}'
+    request = fake_api.requests_to("/calls/call-1/tools")[0]
+    assert request.body == {
+        "orgId": "org-kbs",
+        "name": "check_stock",
+        "arguments": {"animal": "pig"},
+    }
+    await client.aclose()
+
+
+async def test_a_customer_tool_without_a_call_record_is_explained_not_silent():
+    call, _ = await make_call({"agentId": "a"}, {"httpTools": [STOCK_TOOL]}, FakeSip())
+    tool = next(tool for tool in call._assistant.tools if tool.info.name == "check_stock")
+    with pytest.raises(ToolError, match="could not check right now"):
+        await tool({"animal": "pig"})
 
 
 async def test_keypad_input_is_wired_only_when_enabled():

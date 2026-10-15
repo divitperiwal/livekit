@@ -96,6 +96,7 @@ export async function accountSummary(db: Database, account: AccountRow, now = ne
     creditCapInr: account.creditCapInr,
     dailyCapInr: account.dailyCapInr,
     balanceCheckUrl: account.balanceCheckUrl,
+    toolSecret: account.toolSecretCiphertext ? "set" : "none",
     unpaidInr: await unpaidInr(db, account.id),
     usageTodayInr: await usageTodayInr(db, account.id, now),
     liveCalls: (await liveCallRooms(db, account.id)).length,

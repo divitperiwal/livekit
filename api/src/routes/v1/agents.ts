@@ -19,6 +19,7 @@ import {
   versionInputSchema,
   type AgentOutcome,
 } from "../../modules/agents/agents";
+import { missingToolSecretProblem } from "../../modules/tools/tool-secret";
 
 const publishSchema = z.strictObject({ versionId: z.string().optional() });
 const experimentSchema = z.strictObject({
@@ -44,6 +45,15 @@ function savedOrThrow(outcome: AgentOutcome): AgentSaved {
 
 const actor = (keyId: string) => `key:${keyId}`;
 
+async function refuseUnsignedTools(
+  db: AppDependencies["db"],
+  accountId: string,
+  config: Record<string, unknown>,
+) {
+  const problem = await missingToolSecretProblem(db, accountId, config);
+  if (problem) throw new HttpError(422, `invalid config: ${problem}`);
+}
+
 /** Mounted under /v1/orgs/:externalId/agents, behind requireOrg. */
 export function agentRoutes({ db }: AppDependencies) {
   return new Hono<V1Env>()
@@ -53,6 +63,7 @@ export function agentRoutes({ db }: AppDependencies) {
     })
     .post("/", requireScope("orgs:write"), async (c) => {
       const input = await parseJsonBody(c, agentInputSchema);
+      await refuseUnsignedTools(db, c.get("org").accountId, input.config);
       const { agent } = savedOrThrow(await createAgent(db, c.get("org").id, input));
       return c.json(toPublicAgent(agent), 201);
     })
@@ -73,6 +84,7 @@ export function agentRoutes({ db }: AppDependencies) {
     })
     .put("/:agentId/draft", requireScope("orgs:write"), async (c) => {
       const input = await parseJsonBody(c, versionInputSchema);
+      await refuseUnsignedTools(db, c.get("org").accountId, input.config);
       const outcome = await saveDraft(db, c.get("org").id, c.req.param("agentId"), input);
       const { agent, version } = savedOrThrow(outcome);
       return c.json({ agent: toPublicAgent(agent), version: toPublicVersion(version!) }, 201);

@@ -566,20 +566,6 @@
           ],
           "default": null,
           "title": "Availableinr"
-        },
-        "tools": {
-          "default": [],
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Tools",
-          "type": "array"
-        },
-        "knowledgeBaseCount": {
-          "default": 0,
-          "title": "Knowledgebasecount",
-          "type": "integer"
         }
       },
       "required": [
@@ -592,6 +578,62 @@
         "greeting"
       ],
       "title": "ResolveResponse",
+      "type": "object"
+    },
+    "ToolCallRequest": {
+      "description": "The model's arguments for one of the call's `httpTools`, by name. The API checks them\nagainst the version the call runs, then calls the business's endpoint. Not idempotent:\nthe business's endpoint may act, so it is never retried. 422: the arguments do not fit\nthe tool, and the error says how, for the model to correct.",
+      "properties": {
+        "orgId": {
+          "title": "Orgid",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Arguments",
+          "type": "object"
+        }
+      },
+      "required": [
+        "orgId",
+        "name"
+      ],
+      "title": "ToolCallRequest",
+      "type": "object"
+    },
+    "ToolCallResponse": {
+      "description": "`ok` false: the business's system failed or did not answer in time. `output` is its\nanswer (cut short when long) or what went wrong, for the model to read.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "statusCode": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statuscode"
+        },
+        "output": {
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "output"
+      ],
+      "title": "ToolCallResponse",
       "type": "object"
     },
     "UsageReport": {

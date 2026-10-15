@@ -46,6 +46,7 @@ import { addPoolNumber, E164, listNumbers } from "./modules/numbers/pool";
 import { releaseHeldNumber } from "./modules/numbers/release-number";
 import { findLiveOrg } from "./modules/orgs/orgs";
 import { SecretBox } from "./modules/secrets/secret-box";
+import { rotateToolSecret } from "./modules/tools/tool-secret";
 import type { WebhookEvent } from "./modules/webhooks/enqueue";
 import {
   addWebhookEndpoint,
@@ -81,6 +82,7 @@ account show <slug>
 account list
 account suspend <slug> [--end-live-calls]
 account resume <slug>
+account tool-secret <slug>   (sets or replaces the secret that signs its agents' tool requests; shown once)
 account payment --account <slug> --amount <₹> --ref <payment ref>
 account adjust --account <slug> --amount=<±₹> --ref <ref> --reason <text>   (negative: --amount=-500 debits)
 key create --account <slug> --name <name> [--max-concurrent-calls <n>] [--scopes calls:read,calls:write] [--expires <YYYY-MM-DD>]
@@ -294,6 +296,19 @@ async function accountCommand(deps: CliDependencies, command: string | undefined
       const account = await accountBySlug(db, positionals[0]);
       await setAccountStatus(db, account.id, "active");
       return out(`resumed ${account.slug}`);
+    }
+    case "tool-secret": {
+      const { positionals } = parse(args, {});
+      const account = await accountBySlug(db, positionals[0]);
+      const replaces = Boolean(account.toolSecretCiphertext);
+      const secret = await rotateToolSecret(db, secretBox, account.id);
+      out(`tool signing secret for ${account.slug}, shown once:`);
+      out("");
+      out(`  ${secret}`);
+      out("");
+      if (replaces) out("the old secret stopped working now: give the account the new one");
+      const signedText = '"<X-Automitra-Timestamp>.<METHOD>.<path?query>.<body>"';
+      return out(`verify: X-Automitra-Signature = sha256=<hex HMAC-SHA256(secret, ${signedText})>`);
     }
     case "payment": {
       const { values } = parse(args, {

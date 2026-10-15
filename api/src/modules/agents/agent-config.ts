@@ -3,7 +3,7 @@ import agentConfigSchema from "../../../../schema/agent-config.schema.json";
 
 /**
  * The stored (camelCase) agent config, judged as the worker's `AgentConfigModel` judges
- * it (guarantee 17): ajv over the worker-generated schema, then the five rules JSON Schema
+ * it (guarantee 17): ajv over the worker-generated schema, then the six rules JSON Schema
  * cannot express. `schema/agent-config.cases.json` holds cases both sides must agree on.
  */
 
@@ -11,6 +11,8 @@ import agentConfigSchema from "../../../../schema/agent-config.schema.json";
 const ENDPOINTING_DELAYS_WITH_TURN_DETECTOR = [0.3, 2.5] as const;
 const ENDPOINTING_DELAYS_WITHOUT_TURN_DETECTOR = [0.5, 3.0] as const;
 const MIN_VAD_SILENCE_WITH_TURN_DETECTOR = 0.25;
+/** Mirrors `BUILT_IN_TOOL_NAMES`: the call's own tools. */
+const BUILT_IN_TOOL_NAMES = ["end_call", "transfer_call", "send_dtmf_events"];
 
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const validateSchema = ajv.compile(agentConfigSchema);
@@ -25,6 +27,22 @@ export type AgentConfigResult = { valid: true } | { valid: false; problems: stri
 /** A field's value, or the model's default when it is not set. */
 function effective<T>(config: AgentConfig, key: string): T {
   return (key in config ? config[key] : properties[key]?.default) as T;
+}
+
+type NamedTool = { name: string; parameters?: { name: string }[] };
+
+const hasRepeats = (names: string[]) => new Set(names).size !== names.length;
+
+function toolNameProblem(tools: NamedTool[]): string | null {
+  const names = tools.map((tool) => tool.name);
+  const taken = BUILT_IN_TOOL_NAMES.filter((name) => names.includes(name)).sort();
+  if (taken.length > 0) {
+    return `httpTools may not be named ${taken.join(", ")}: the call uses those names`;
+  }
+  if (hasRepeats(names)) return "httpTools names must be unique";
+  const repeating = tools.find((tool) => hasRepeats((tool.parameters ?? []).map((p) => p.name)));
+  if (repeating) return `parameter names of httpTools '${repeating.name}' must be unique`;
+  return null;
 }
 
 function crossFieldProblems(config: AgentConfig): string[] {
@@ -62,6 +80,9 @@ function crossFieldProblems(config: AgentConfig): string[] {
   const minDelay = effective<number | null>(config, "endpointingMinDelay") ?? defaultMin;
   const maxDelay = effective<number | null>(config, "endpointingMaxDelay") ?? defaultMax;
   if (minDelay > maxDelay) problems.push("endpointingMinDelay must not exceed endpointingMaxDelay");
+
+  const toolProblem = toolNameProblem(effective<NamedTool[]>(config, "httpTools"));
+  if (toolProblem) problems.push(toolProblem);
 
   return problems;
 }

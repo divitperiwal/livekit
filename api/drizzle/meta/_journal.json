@@ -57,6 +57,13 @@
       "when": 1791822147027,
       "tag": "0007_ucc_complaints",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792071521144,
+      "tag": "0008_account_tool_secret",
+      "breakpoints": true
     }
   ]
 }

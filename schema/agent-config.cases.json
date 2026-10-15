@@ -225,6 +225,72 @@
       "config": {
         "recordingNotice": ""
       }
+    },
+    {
+      "name": "customer tools: a stock check and an order lookup by POST",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "How many of an animal are in stock today.",
+            "url": "https://erp.example.in/api/stock",
+            "parameters": [
+              {
+                "name": "animal",
+                "type": "enum",
+                "options": [
+                  "pig",
+                  "goat",
+                  "poultry"
+                ],
+                "description": "Which animal the caller asks about"
+              }
+            ]
+          },
+          {
+            "name": "order_status",
+            "description": "Where an order is.",
+            "method": "POST",
+            "url": "https://erp.example.in/api/orders/status?source=voice",
+            "timeout": 8,
+            "parameters": [
+              {
+                "name": "order_number",
+                "description": "As the caller reads it"
+              },
+              {
+                "name": "include_items",
+                "type": "boolean",
+                "required": false
+              },
+              {
+                "name": "quantity",
+                "type": "number",
+                "required": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool with a whole-second timeout at each bound",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "timeout": 1
+          },
+          {
+            "name": "check_price",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "timeout": 10
+          }
+        ]
+      }
     }
   ],
   "invalid": [
@@ -670,6 +736,281 @@
       "name": "silence timeout above 120 seconds",
       "config": {
         "silenceTimeout": 121
+      }
+    },
+    {
+      "name": "customer tool named like a built-in tool",
+      "config": {
+        "httpTools": [
+          {
+            "name": "end_call",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two customer tools with one name",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool with a repeated parameter name",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "parameters": [
+              {
+                "name": "animal"
+              },
+              {
+                "name": "animal",
+                "type": "number"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool over plain http",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "http://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool url with a space",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/my stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool timeout above 10 seconds",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "timeout": 11
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool timeout below 1 second",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "timeout": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool method PUT",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "method": "PUT"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool without a url",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today."
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool with an empty description",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "",
+            "url": "https://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool name with capitals",
+      "config": {
+        "httpTools": [
+          {
+            "name": "CheckStock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "eleven customer tools",
+      "config": {
+        "httpTools": [
+          {
+            "name": "tool_0",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_1",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_2",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_3",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_4",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_5",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_6",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_7",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_8",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_9",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          },
+          {
+            "name": "tool_10",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock"
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool with eleven parameters",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "parameters": [
+              {
+                "name": "p0"
+              },
+              {
+                "name": "p1"
+              },
+              {
+                "name": "p2"
+              },
+              {
+                "name": "p3"
+              },
+              {
+                "name": "p4"
+              },
+              {
+                "name": "p5"
+              },
+              {
+                "name": "p6"
+              },
+              {
+                "name": "p7"
+              },
+              {
+                "name": "p8"
+              },
+              {
+                "name": "p9"
+              },
+              {
+                "name": "p10"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "customer tool parameter of an unknown type",
+      "config": {
+        "httpTools": [
+          {
+            "name": "check_stock",
+            "description": "Stock today.",
+            "url": "https://erp.example.in/stock",
+            "parameters": [
+              {
+                "name": "animal",
+                "type": "array"
+              }
+            ]
+          }
+        ]
       }
     }
   ]

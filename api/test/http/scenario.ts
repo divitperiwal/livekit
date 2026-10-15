@@ -8,7 +8,12 @@ import {
   rateCards,
   webhookEndpoints,
 } from "../../src/db/schema";
-import type { CallEvent, FinalizeCallRequest, OpenCallRequest } from "../../src/contracts/internal";
+import type {
+  CallEvent,
+  FinalizeCallRequest,
+  OpenCallRequest,
+  ToolCallRequest,
+} from "../../src/contracts/internal";
 import { assertWorkerAccepts } from "../contracts/worker-contract";
 import { oneMinuteOfUsage, seedLikeRates } from "../fixtures/rate-card";
 import { testSecretBox } from "../fixtures/secrets";
@@ -20,6 +25,8 @@ export const CALLER_NUMBER = "+919876543210";
 type ScenarioOptions = Parameters<typeof createTestApp>[0] & {
   account?: Partial<typeof accounts.$inferInsert>;
   org?: Partial<typeof orgs.$inferInsert>;
+  /** The live version's agent config. */
+  agentConfig?: Record<string, unknown>;
   /** Defaults to true: a global rate card with the seed card's rules. */
   rateCard?: boolean;
 };
@@ -60,7 +67,7 @@ export async function createScenario(options: ScenarioOptions = {}) {
       promptMode: "prepend_base_rules",
       instructions: "Book appointments for the clinic.",
       greeting: "Namaste, Sharma Clinic.",
-      config: { ttsSpeaker: "ritu", ttsPace: 1.1 },
+      config: options.agentConfig ?? { ttsSpeaker: "ritu", ttsPace: 1.1 },
       publishedAt: new Date(),
     })
     .returning();
@@ -156,7 +163,16 @@ export async function createScenario(options: ScenarioOptions = {}) {
     return { status: response.status, body };
   }
 
-  return { app, db, internal, ids, resolve, open, openRequest, appendEvents, finalize };
+  async function callTool(callId: string, overrides: Partial<ToolCallRequest> = {}) {
+    const request: ToolCallRequest = { orgId: ids.orgId, name: "", arguments: {}, ...overrides };
+    assertWorkerAccepts("ToolCallRequest", request);
+    const response = await json(`/calls/${callId}/tools`, request);
+    const body: any = await response.json();
+    assertWorkerAccepts(response.ok ? "ToolCallResponse" : "ErrorResponse", body);
+    return { status: response.status, body };
+  }
+
+  return { app, db, internal, ids, resolve, open, openRequest, appendEvents, finalize, callTool };
 }
 
 export const event = (seq: number, overrides: Partial<CallEvent> = {}): CallEvent => ({

@@ -76,6 +76,110 @@
       "title": "ClosingLine",
       "type": "object"
     },
+    "HttpTool": {
+      "additionalProperties": false,
+      "description": "An endpoint of the business's own system the agent may call mid-call, such as a stock\ncheck. The API sends it, signed with the account's tool secret: GET puts the arguments\nin the query string, POST sends them as a JSON body. `timeout` is seconds the caller\nwaits.",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "method": {
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 500,
+          "pattern": "^https://[^\\s]+$",
+          "title": "Url",
+          "type": "string"
+        },
+        "parameters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolParameter"
+          },
+          "maxItems": 10,
+          "title": "Parameters",
+          "type": "array"
+        },
+        "timeout": {
+          "default": 5.0,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "url"
+      ],
+      "title": "HttpTool",
+      "type": "object"
+    },
+    "ToolParameter": {
+      "additionalProperties": false,
+      "description": "One argument the model fills in. An enum with no options is sent as a string.",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "default": "string",
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "enum"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Description",
+          "type": "string"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "maxLength": 40,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Options",
+          "type": "array"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ToolParameter",
+      "type": "object"
+    },
     "TransferTarget": {
       "additionalProperties": false,
       "properties": {
@@ -362,6 +466,15 @@
       },
       "maxItems": 10,
       "title": "Transfertargets",
+      "type": "array"
+    },
+    "httpTools": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/HttpTool"
+      },
+      "maxItems": 10,
+      "title": "Httptools",
       "type": "array"
     },
     "voicemailDetection": {

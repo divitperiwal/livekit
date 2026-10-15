@@ -7,8 +7,14 @@ from automitra_worker.control_plane.client import (
     ControlPlaneClient,
     ControlPlaneUnavailable,
     OutOfCredit,
+    ToolArgumentsRefused,
 )
-from automitra_worker.control_plane.contract import CallEvent, FinalizeCallRequest, OpenCallRequest
+from automitra_worker.control_plane.contract import (
+    CallEvent,
+    FinalizeCallRequest,
+    OpenCallRequest,
+    ToolCallRequest,
+)
 
 OPEN_CALL = OpenCallRequest(
     org_id="org-kbs",
@@ -144,3 +150,34 @@ async def test_closing_twice_is_safe_and_a_closed_client_raises_on_resolve(fake_
     await client.aclose()
     with pytest.raises(ControlPlaneUnavailable):
         await client.resolve(agent_id="agent-simran")
+
+
+STOCK_CHECK = ToolCallRequest(org_id="org-kbs", name="check_stock", arguments={"animal": "pig"})
+
+
+async def test_a_tool_call_is_sent_once_with_the_secret_and_returns_the_answer(fake_api, client):
+    answer = await client.call_tool("call-1", STOCK_CHECK, timeout_seconds=5)
+    assert (answer.ok, answer.status_code, answer.output) == (True, 200, '{"pigs": 42}')
+    [request] = fake_api.requests_to("/calls/call-1/tools")
+    assert request.secret == SECRET
+    assert request.body == {
+        "orgId": "org-kbs",
+        "name": "check_stock",
+        "arguments": {"animal": "pig"},
+    }
+
+
+async def test_a_tool_call_is_not_retried_when_the_api_is_down(fake_api, client):
+    fake_api.tool_status = 503
+    with pytest.raises(ControlPlaneUnavailable):
+        await client.call_tool("call-1", STOCK_CHECK, timeout_seconds=5)
+    assert len(fake_api.requests_to("/tools")) == 1
+
+
+async def test_tool_arguments_the_api_refuses_carry_its_reason(fake_api, client):
+    fake_api.tool_status = 422
+    with pytest.raises(ToolArgumentsRefused, match="refused with 422"):
+        await client.call_tool("call-1", STOCK_CHECK, timeout_seconds=5)
+    fake_api.tool_status = 404
+    with pytest.raises(CallRefused):
+        await client.call_tool("call-1", STOCK_CHECK, timeout_seconds=5)

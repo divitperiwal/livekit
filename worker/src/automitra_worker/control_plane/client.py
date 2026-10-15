@@ -12,6 +12,9 @@ Opening and finalizing a call are retried when the failure may pass (no answer, 
 timeout, a 5xx): a call whose record is never opened or closed is never billed, and the
 API restarts for a few seconds on every deploy. Events are not: the buffer flushes again
 in two seconds.
+
+A customer tool call is neither: the caller is waiting, and the business's endpoint may act
+(book, reserve), so it is sent once and a failure is told to the model to explain.
 """
 
 import asyncio
@@ -31,6 +34,8 @@ from automitra_worker.control_plane.contract import (
     OpenCallRequest,
     OpenCallResponse,
     ResolveResponse,
+    ToolCallRequest,
+    ToolCallResponse,
 )
 
 logger = logging.getLogger("automitra.control_plane")
@@ -42,6 +47,8 @@ WRITE_TIMEOUT_SECONDS = 5.0
 OPEN_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 # About a minute in all, inside the post-call allowance deploy.sh gives a draining worker.
 FINALIZE_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
+# On top of the tool's own timeout: the API's address check and its own answer.
+TOOL_CALL_MARGIN_SECONDS = 3.0
 
 
 class ControlPlaneUnavailable(RuntimeError):
@@ -54,6 +61,10 @@ class CallRefused(RuntimeError):
 
 class OutOfCredit(CallRefused):
     """402: the account or org cannot pay. A business refusal, not a fault."""
+
+
+class ToolArgumentsRefused(CallRefused):
+    """422: the model's arguments do not fit the tool. The message says how."""
 
 
 class _WriteRefused(RuntimeError):
@@ -162,6 +173,34 @@ class ControlPlaneClient:
             purpose="finalize a call",
             retry_delays=FINALIZE_RETRY_DELAYS_SECONDS,
         )
+
+    async def call_tool(
+        self, call_id: str, request: ToolCallRequest, *, timeout_seconds: float
+    ) -> ToolCallResponse:
+        """Sent once. Raises when the API refuses or cannot be reached; a business system
+        that fails comes back as `ok` false."""
+        try:
+            async with self._require_session().post(
+                f"{self._base_url}/internal/calls/{call_id}/tools",
+                json=request.to_wire(),
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds + TOOL_CALL_MARGIN_SECONDS),
+            ) as response:
+                if response.status == 200:
+                    return ToolCallResponse.model_validate(await response.json())
+                detail = await _error_detail(response)
+                if response.status == 422:
+                    raise ToolArgumentsRefused(detail)
+                if 400 <= response.status < 500:
+                    raise CallRefused(f"tool call refused with {response.status}: {detail}")
+                raise ControlPlaneUnavailable(f"tool call returned {response.status}: {detail}")
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise ControlPlaneUnavailable(
+                f"could not reach the control plane: {error!r}"
+            ) from error
+        except ValidationError as error:
+            raise ControlPlaneUnavailable(
+                f"tool call answered with an unexpected body: {error}"
+            ) from error
 
     async def _write[Response: BaseModel](
         self,

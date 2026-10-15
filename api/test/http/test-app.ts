@@ -4,6 +4,7 @@ import type { CallDispatcher } from "../../src/livekit";
 import { BalanceChecker } from "../../src/modules/billing/balance-check";
 import type { RecordingLinker } from "../../src/modules/calls/recording-link";
 import type { NumberServices } from "../../src/modules/numbers/number-services";
+import type { ToolSender } from "../../src/modules/tools/call-tool";
 import { createTestDatabase } from "../db/test-database";
 import { FakePlivo } from "../fixtures/fake-plivo";
 import { testSecretBox } from "../fixtures/secrets";
@@ -23,6 +24,8 @@ type TestAppOptions = {
   plivo?: FakePlivo | null;
   /** Default: links to TEST_RECORDINGS_URL. Null: recording storage not configured. */
   recordingLinker?: RecordingLinker | null;
+  /** Answers customer tool requests. Default: the real SSRF-guarded request. */
+  sendToolRequest?: ToolSender;
 };
 
 export const TEST_RECORDINGS_URL = "https://recordings.example";
@@ -67,6 +70,7 @@ export async function createTestApp(options: TestAppOptions = {}) {
       options.recordingLinker === undefined ? fakeRecordingLinker : options.recordingLinker,
     roomPrefix: "call",
     ratePerMinute: options.ratePerMinute ?? 1_000,
+    sendToolRequest: options.sendToolRequest,
     random: options.random,
     now: options.now ?? (() => TEST_NOW),
   });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { agentVersions, orgs, phoneNumbers } from "../../src/db/schema";
+import { accounts, agentVersions, orgs, phoneNumbers } from "../../src/db/schema";
+import { testSecretBox } from "../fixtures/secrets";
 import { CLINIC_NUMBER } from "../http/scenario";
 import { agentBody, createV1Scenario, ORG_NUMBER } from "../http/v1-scenario";
 import { TEST_INTERNAL_SECRET } from "../http/test-app";
@@ -150,6 +151,37 @@ describe("agents and versions", () => {
         })
       ).status,
     ).toBe(409);
+  });
+
+  test("customer tools are saved only once the account can sign their requests", async () => {
+    const { api, db, withOrgAndAgent } = await createV1Scenario();
+    const { agentId } = await withOrgAndAgent();
+    const withTools = {
+      ...agentBody,
+      name: undefined,
+      slug: undefined,
+      config: {
+        httpTools: [
+          { name: "check_stock", description: "Pigs in stock.", url: "https://erp.example.in/s" },
+        ],
+      },
+    };
+    const refused = await api("PUT", `/orgs/clinic-42/agents/${agentId}/draft`, withTools);
+    expect(refused).toMatchObject({
+      status: 422,
+      body: {
+        error:
+          "invalid config: httpTools need the account's tool signing secret: ask us to set one",
+      },
+    });
+    const newAgent = { ...agentBody, slug: "stock-desk", config: withTools.config };
+    expect((await api("POST", "/orgs/clinic-42/agents", newAgent)).status).toBe(422);
+
+    await db.update(accounts).set({ toolSecretCiphertext: testSecretBox.encrypt("tsec_x") });
+    expect((await api("PUT", `/orgs/clinic-42/agents/${agentId}/draft`, withTools)).status).toBe(
+      201,
+    );
+    expect((await api("POST", "/orgs/clinic-42/agents", newAgent)).status).toBe(201);
   });
 });
 

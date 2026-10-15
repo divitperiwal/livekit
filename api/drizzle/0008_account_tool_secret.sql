@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "tool_secret_ciphertext" text;

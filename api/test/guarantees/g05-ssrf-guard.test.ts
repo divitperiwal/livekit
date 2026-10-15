@@ -4,7 +4,10 @@ import {
   checkedAddress,
   isPublicAddress,
   safePost,
+  safeRequest,
 } from "../../src/modules/webhooks/safe-fetch";
+import { testSecretBox } from "../fixtures/secrets";
+import { createScenario } from "../http/scenario";
 
 describe("guarantee 5: customer URLs pass the SSRF guard", () => {
   test.each([
@@ -62,16 +65,22 @@ describe("guarantee 5: customer URLs pass the SSRF guard", () => {
 
   describe("delivery is pinned to the checked address and never redirected", () => {
     let server: ReturnType<typeof Bun.serve>;
-    const seen: { host: string | null; path: string }[] = [];
+    const seen: { host: string | null; path: string; query?: string }[] = [];
     beforeAll(() => {
       server = Bun.serve({
         port: 0,
         hostname: "127.0.0.1",
         fetch: (request) => {
-          seen.push({ host: request.headers.get("host"), path: new URL(request.url).pathname });
-          return new URL(request.url).pathname === "/redirect"
-            ? new Response(null, { status: 302, headers: { location: "http://169.254.169.254/" } })
-            : new Response("ok");
+          const url = new URL(request.url);
+          seen.push({ host: request.headers.get("host"), path: url.pathname, query: url.search });
+          if (url.pathname === "/redirect") {
+            return new Response(null, {
+              status: 302,
+              headers: { location: "http://169.254.169.254/" },
+            });
+          }
+          if (url.pathname === "/big") return new Response("x".repeat(100_000));
+          return new Response("ok");
         },
       });
     });
@@ -93,7 +102,35 @@ describe("guarantee 5: customer URLs pass the SSRF guard", () => {
         options(),
       );
       expect(result.status).toBe(200);
-      expect(seen.at(-1)).toEqual({ host: `hooks.example.invalid:${server.port}`, path: "/hook" });
+      expect(seen.at(-1)).toMatchObject({
+        host: `hooks.example.invalid:${server.port}`,
+        path: "/hook",
+      });
+    });
+
+    test("a tool's GET reaches the checked address and its answer is read, capped", async () => {
+      const small = await safeRequest(
+        {
+          method: "GET",
+          url: `http://erp.example.invalid:${server.port}/stock?animal=pig`,
+          headers: {},
+          maxResponseBytes: 1_000,
+        },
+        options(),
+      );
+      expect(small).toEqual({ status: 200, body: "ok" });
+      expect(seen.at(-1)).toMatchObject({ path: "/stock", query: "?animal=pig" });
+
+      const big = await safeRequest(
+        {
+          method: "GET",
+          url: `http://erp.example.invalid:${server.port}/big`,
+          headers: {},
+          maxResponseBytes: 1_000,
+        },
+        options(),
+      );
+      expect(big.body).toBe("x".repeat(1_000));
     });
 
     test("a redirect is reported, not followed", async () => {
@@ -123,5 +160,25 @@ describe("guarantee 5: customer URLs pass the SSRF guard", () => {
       ).rejects.toThrow(BlockedUrlError);
       expect(seen.length).toBe(before);
     });
+  });
+
+  test("a customer tool pointed at a private address is never contacted", async () => {
+    const { open, callTool } = await createScenario({
+      agentConfig: {
+        httpTools: [
+          {
+            name: "metadata",
+            description: "Reads the cloud metadata service.",
+            url: "https://169.254.169.254/latest/meta-data",
+          },
+        ],
+      },
+      account: { toolSecretCiphertext: testSecretBox.encrypt("tsec_test") },
+    });
+    const { body: call } = await open();
+    const { status, body } = await callTool(call.id, { name: "metadata" });
+    expect(status).toBe(200);
+    expect(body.ok).toBe(false);
+    expect(body.output).toContain("non-public address");
   });
 });

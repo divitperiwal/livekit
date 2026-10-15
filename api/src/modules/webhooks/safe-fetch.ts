@@ -131,30 +131,43 @@ export async function checkedAddress(
   return addresses[0]!;
 }
 
-/** POSTs `body` to a checked, pinned address. Resolves with the status; never follows redirects. */
-export async function safePost(
-  urlText: string,
-  body: string,
-  headers: Record<string, string>,
+export type SafeRequest = {
+  method: "GET" | "POST";
+  url: string;
+  headers: Record<string, string>;
+  body?: string;
+  /** The response body is read up to this many bytes and the rest dropped. Default: not read. */
+  maxResponseBytes?: number;
+};
+
+export type SafeResponse = { status: number; body: string };
+
+/** Sends a request to a checked, pinned address. Never follows redirects. */
+export async function safeRequest(
+  request: SafeRequest,
   options: SafePostOptions,
-): Promise<{ status: number }> {
-  const url = new URL(urlText);
+): Promise<SafeResponse> {
+  const url = new URL(request.url);
   const pinned = await checkedAddress(url, options);
   const transport = url.protocol === "https:" ? https : http;
+  const maxResponseBytes = request.maxResponseBytes ?? 0;
+  const bodyHeaders =
+    request.body === undefined
+      ? {}
+      : {
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(request.body)),
+        };
 
   return new Promise((resolve, reject) => {
-    const request = transport.request(
+    const outgoing = transport.request(
       {
         protocol: url.protocol,
         host: url.hostname.replace(/^\[|\]$/g, ""),
         port: url.port || undefined,
         path: `${url.pathname}${url.search}`,
-        method: "POST",
-        headers: {
-          ...headers,
-          "content-type": "application/json",
-          "content-length": String(Buffer.byteLength(body)),
-        },
+        method: request.method,
+        headers: { ...request.headers, ...bodyHeaders },
         // Pins the connection to the address checked above; Bun asks for the `all` form.
         lookup: ((
           _hostname: string,
@@ -166,15 +179,38 @@ export async function safePost(
             : callback(null, pinned.address, pinned.family)) as never,
       },
       (response) => {
-        response.resume(); // the body is not needed; drain it so the socket closes
-        response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+        const status = response.statusCode ?? 0;
+        const chunks: Buffer[] = [];
+        let received = 0;
+        const finish = () => resolve({ status, body: Buffer.concat(chunks).toString("utf8") });
+        response.on("data", (chunk: Buffer) => {
+          if (received >= maxResponseBytes) return; // drained, so the socket closes
+          chunks.push(chunk.subarray(0, maxResponseBytes - received));
+          received += chunk.length;
+          if (received >= maxResponseBytes && maxResponseBytes > 0) {
+            finish();
+            outgoing.destroy();
+          }
+        });
+        response.on("end", finish);
         response.on("error", reject);
       },
     );
-    request.setTimeout(options.timeoutMs, () =>
-      request.destroy(new Error(`no answer within ${options.timeoutMs} ms`)),
+    outgoing.setTimeout(options.timeoutMs, () =>
+      outgoing.destroy(new Error(`no answer within ${options.timeoutMs} ms`)),
     );
-    request.on("error", reject);
-    request.end(body);
+    outgoing.on("error", reject);
+    outgoing.end(request.body);
   });
+}
+
+/** POSTs `body` to a checked, pinned address. Resolves with the status; never follows redirects. */
+export async function safePost(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  options: SafePostOptions,
+): Promise<{ status: number }> {
+  const { status } = await safeRequest({ method: "POST", url, headers, body }, options);
+  return { status };
 }

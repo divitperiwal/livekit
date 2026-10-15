@@ -259,6 +259,26 @@ describe("account", () => {
     expect(result.code).toBe(1);
     expect(result.output).toContain("could not be ended");
   });
+
+  test("tool-secret sets the account's signing secret, shown once, and replaces it", async () => {
+    const { run, db } = await createCli();
+    await run("account", "create", "marcofed", "--name", "MARCOFED");
+    expect((await run("account", "show", "marcofed")).output).toMatch(/toolSecret\s+none/);
+
+    const first = await run("account", "tool-secret", "marcofed");
+    expect(first.code).toBe(0);
+    const secret = first.output.match(/tsec_[\w-]+/)![0];
+    const account = await accountRow(db, "marcofed");
+    expect(account.toolSecretCiphertext).not.toContain(secret);
+    expect(testSecretBox.decrypt(account.toolSecretCiphertext!)).toBe(secret);
+    expect(first.output).not.toContain("stopped working");
+    expect((await run("account", "show", "marcofed")).output).toMatch(/toolSecret\s+set/);
+
+    const second = await run("account", "tool-secret", "marcofed");
+    expect(second.output).toContain("the old secret stopped working now");
+    const replaced = await accountRow(db, "marcofed");
+    expect(testSecretBox.decrypt(replaced.toolSecretCiphertext!)).not.toBe(secret);
+  });
 });
 
 describe("key", () => {
