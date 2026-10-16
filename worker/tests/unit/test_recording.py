@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import aiohttp
-import pytest
 
 from automitra_worker.reporting.recording import (
     CallRecorder,

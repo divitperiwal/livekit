@@ -1,7 +1,5 @@
 import asyncio
 
-import pytest
-
 from automitra_worker.control_plane.contract import AppendEventsResponse
 from automitra_worker.reporting import event_buffer
 from automitra_worker.reporting.event_buffer import MAX_BUFFERED_EVENTS, EventBuffer

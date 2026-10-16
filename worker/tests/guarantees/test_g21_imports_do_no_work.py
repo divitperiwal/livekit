@@ -25,5 +25,6 @@ def test_importing_every_worker_module_opens_no_network_connection():
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr

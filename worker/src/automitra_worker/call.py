@@ -404,7 +404,7 @@ class Call:
                         participant_identity=self.line.phone_identity,
                     )
                 )
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 self.outcome.status, self.outcome.end_reason = classify_dial_failure(error)
                 self.outcome.answered = False
                 logger.info("%s was not answered: %s (%s)", to_number, self.outcome.status, error)

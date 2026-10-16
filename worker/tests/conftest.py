@@ -7,8 +7,8 @@ from aiohttp.test_utils import TestServer
 # Lets tests import shared fakes (`from cost_fakes import ...`).
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fake_bucket import FakeBucket  # noqa: E402
-from fake_control_plane import FakeControlPlane  # noqa: E402
+from fake_bucket import FakeBucket
+from fake_control_plane import FakeControlPlane
 
 
 @pytest.fixture

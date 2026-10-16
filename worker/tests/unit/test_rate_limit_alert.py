@@ -23,7 +23,7 @@ WITH_FALLBACKS = AgentConfigModel(
 def credentials(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-key")
     monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
-    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-of-at-least-32-bytes")
 
 
 def emit_error(service, error_type, error: Exception) -> None:

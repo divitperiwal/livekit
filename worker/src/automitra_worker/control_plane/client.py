@@ -219,7 +219,7 @@ class ControlPlaneClient:
             except (_WriteRefused, ValidationError, ControlPlaneUnavailable) as error:
                 logger.warning("could not %s: %s", purpose, error)
                 return None
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 delay = next(delays, None)
                 if delay is None:
                     logger.warning("could not %s: %r", purpose, error)
@@ -252,5 +252,5 @@ async def _error_detail(response: aiohttp.ClientResponse) -> str:
     try:
         body: Any = await response.json()
         return str(body.get("error") or body)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return (await response.text())[:200]

@@ -64,9 +64,10 @@ class RuntimeAgent:
     def describe(self) -> str:
         config = self.config
         min_delay, max_delay = config.effective_endpointing_delays
+        budget = f"Rs {config.budget_inr:.2f}/call" if config.budget_inr > 0 else "off"
         return (
             f"agent={self.name} "
-            f"budget={'Rs %.2f/call' % config.budget_inr if config.budget_inr > 0 else 'off'} "
+            f"budget={budget} "
             f"stt={config.stt_model} (mode={config.stt_mode}, lang={config.stt_language}, "
             f"realtime={config.stt_realtime}) "
             f"llm={config.llm_model} "

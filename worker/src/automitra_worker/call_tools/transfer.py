@@ -21,9 +21,11 @@ TRANSFERRED = "transferred"
 
 def transfer_description(targets: tuple[TransferTarget, ...]) -> str:
     lines = [
-        "Transfer the caller to a person. Before calling this, tell the caller you are "
-        "transferring them and wait for them to hear it. Only transfer when the caller asks "
-        "for a person or needs something you cannot do. Where you can transfer to:"
+        (
+            "Transfer the caller to a person. Before calling this, tell the caller you are "
+            "transferring them and wait for them to hear it. Only transfer when the caller asks "
+            "for a person or needs something you cannot do. Where you can transfer to:"
+        )
     ]
     lines += [
         f"- {target.name}: {target.description}" if target.description else f"- {target.name}"

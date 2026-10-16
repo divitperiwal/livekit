@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { accountLedger, accounts, calls } from "../../src/db/schema";
 import { assertWorkerAccepts } from "../contracts/worker-contract";
@@ -188,17 +188,22 @@ describe("POST /v1/orgs/:externalId/calls", () => {
     });
     const { agentId } = await withOrgAndAgent();
     const key = await issue({ maxConcurrentCalls: 1 });
-    const refused = await v1(key, "POST", "/orgs/clinic-42/calls", { agentId, to: CUSTOMER });
-    expect(refused).toMatchObject({
-      status: 503,
-      body: { error: "could not reach the call service; nothing was dialled" },
-    });
-    const [call] = await db.select().from(calls);
-    expect(call).toMatchObject({ status: "failed", endReason: "dispatch_failed" });
-    expect((await v1(key, "POST", "/orgs/clinic-42/calls", { agentId, to: CUSTOMER })).status).toBe(
-      503,
-    );
-    expect(await db.$count(calls, eq(calls.status, "queued"))).toBe(0);
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const refused = await v1(key, "POST", "/orgs/clinic-42/calls", { agentId, to: CUSTOMER });
+      expect(refused).toMatchObject({
+        status: 503,
+        body: { error: "could not reach the call service; nothing was dialled" },
+      });
+      const [call] = await db.select().from(calls);
+      expect(call).toMatchObject({ status: "failed", endReason: "dispatch_failed" });
+      expect(errorLog).toHaveBeenCalledWith("dispatch failed", call?.id, expect.any(Error));
+      const retried = await v1(key, "POST", "/orgs/clinic-42/calls", { agentId, to: CUSTOMER });
+      expect(retried.status).toBe(503);
+      expect(await db.$count(calls, eq(calls.status, "queued"))).toBe(0);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("503 when outbound calling is not configured", async () => {

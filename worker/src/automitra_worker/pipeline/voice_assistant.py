@@ -15,7 +15,8 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable
 from typing import Any
 
 from livekit import rtc
-from livekit.agents import Agent, FlushSentinel, ModelSettings, llm as llm_api
+from livekit.agents import Agent, FlushSentinel, ModelSettings
+from livekit.agents import llm as llm_api
 
 from automitra_worker.cost.rate_ceiling import RateCeiling
 from automitra_worker.cost.sentence_gate import SentenceGate

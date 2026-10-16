@@ -10,8 +10,8 @@ configuration is at hand would put a caller through to another company's script.
 
 import json
 import logging
-from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from livekit import rtc

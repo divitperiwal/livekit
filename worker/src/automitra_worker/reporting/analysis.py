@@ -164,7 +164,7 @@ async def analyse_call(
 
     try:
         raw_reply = await asyncio.wait_for(ask(), timeout_seconds)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         logger.warning("call analysis failed: %r", error)
         return None
     analysis = checked_analysis(raw_reply, dispositions, fields, qa_criteria)

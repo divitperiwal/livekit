@@ -202,7 +202,7 @@ class CallRecorder:
         self.storage = storage
         self.key = key
         self.path = path
-        self._recorder: "RecorderIO | None" = None
+        self._recorder: RecorderIO | None = None
         self._finished: asyncio.Future[str | None] | None = None
 
     async def start(self, session: "AgentSession") -> bool:

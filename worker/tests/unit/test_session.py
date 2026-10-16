@@ -1,5 +1,7 @@
 import pytest
-from livekit.agents import llm as llm_api, stt as stt_api, tts as tts_api
+from livekit.agents import llm as llm_api
+from livekit.agents import stt as stt_api
+from livekit.agents import tts as tts_api
 from livekit.plugins import sarvam
 
 from automitra_worker.agent_config.model import AgentConfigModel
@@ -38,7 +40,7 @@ def test_llm_settings_are_passed_only_when_set():
 
 def test_each_configured_fallback_wraps_its_component(monkeypatch):
     monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
-    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-of-at-least-32-bytes")
     config = AgentConfigModel(
         fallback_stt="deepgram/nova-3",
         fallback_llm="openai/gpt-4.1-mini",
